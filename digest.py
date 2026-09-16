@@ -1,21 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Робот-дайджест для Телеграм-канала «Технопульс · Образование».
+Робот-дайджест для Телеграм-канала «Технопульс · Образование». Версия 2.
 
-Что делает:
-  1. Собирает новости из RSS-лент (список ниже).
-  2. Оставляет только те, что касаются роботов, ИИ и EdTech в образовании.
-  3. Переводит зарубежные заголовки и описания на русский.
-  4. Публикует дайджест в канал через Telegram Bot API.
-  5. Запоминает опубликованные ссылки в файле posted.json, чтобы не повторяться.
+Тематика: всё, что связано с ИИ и робототехникой, в пяти разрезах:
+  🎓 образование (школа, СПО, вузы, корпоративное, взрослых) — как внедряют ИИ и роботов, новые методы обучения
+  🏛 госуправление — ИИ в управлении городами, регионами, странами, субсидии и госпрограммы
+  🏢 бизнес — ИИ в управлении компаниями, корпоративный сектор
+  🤖 роботы — обучение роботов, роботы с ИИ
+  🌍 развитие ИИ и его влияние на общество
+Новости без ИИ или роботов не берутся вообще.
+
+Формат публикации: шапка выпуска, затем каждая новость отдельным постом с картинкой.
 
 Настройки (переменные окружения):
   TELEGRAM_BOT_TOKEN — ключ бота от @BotFather
   TELEGRAM_CHAT_ID   — адрес канала, например @tehnopuls_edu, или его числовой id
-Если ключ не задан, робот просто печатает дайджест на экран (режим проверки).
+Если ключ не задан, робот печатает дайджест на экран (режим проверки).
 """
 
-import json, os, re, sys, time, html, hashlib
+import json, os, re, sys, time, html, io
 from datetime import datetime, timedelta, timezone
 import requests, feedparser
 
@@ -23,100 +26,133 @@ import requests, feedparser
 # НАСТРОЙКИ — можно менять без знания программирования
 # ============================================================
 
-MAX_ITEMS = 10           # сколько новостей максимум в одном дайджесте
-MAX_PER_SECTION = 4      # сколько максимум в одной рубрике
-LOOKBACK_HOURS = 36      # брать новости не старше N часов
+MAX_ITEMS = 8            # сколько новостей максимум в одном выпуске
+MAX_PER_SECTION = 3      # сколько максимум в одной рубрике
+MAX_PER_SOURCE = 2       # не больше N новостей от одного издания
+LOOKBACK_HOURS = 30      # брать новости не старше N часов
 CHANNEL_TITLE = "Технопульс · Образование"
+SUMMARY_LEN = 260        # длина описания под картинкой, знаков
 
-# Ленты. type:
-#   "edu"  — издание про образование: берём новости, где есть технологии
-#   "tech" — издание про технологии: берём новости, где есть образование
-#   "news" — общие СМИ: нужно и образование, и технологии
+# Ленты. lang: ru/en. Все ленты фильтруются одинаково: нужна связь с ИИ или роботами.
 FEEDS = [
-    # --- Русскоязычные ---
-    {"name": "Учительская газета",  "url": "https://ug.ru/feed/",                                                   "lang": "ru", "type": "edu"},
-    {"name": "Педсовет",            "url": "https://pedsovet.org/rss",                                              "lang": "ru", "type": "edu"},
-    {"name": "Вести образования",   "url": "https://vogazeta.ru/rss",                                               "lang": "ru", "type": "edu"},
-    {"name": "Хабр · Образование",  "url": "https://habr.com/ru/rss/hubs/edu/articles/all/?fl=ru",                  "lang": "ru", "type": "edu"},
-    {"name": "Хабр · ИИ",           "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/?fl=ru", "lang": "ru", "type": "tech"},
-    {"name": "Хайтек",              "url": "https://hightech.fm/feed",                                              "lang": "ru", "type": "tech"},
-    {"name": "Naked Science",       "url": "https://naked-science.ru/feed",                                         "lang": "ru", "type": "tech"},
-    {"name": "3DNews",              "url": "https://3dnews.ru/news/rss/",                                           "lang": "ru", "type": "tech"},
-    {"name": "CNews",               "url": "https://www.cnews.ru/inc/rss/news.xml",                                 "lang": "ru", "type": "tech"},
-    {"name": "ТАСС",                "url": "https://tass.ru/rss/v2.xml",                                            "lang": "ru", "type": "news"},
-    {"name": "РИА Новости",         "url": "https://ria.ru/export/rss2/archive/index.xml",                          "lang": "ru", "type": "news"},
-    {"name": "Российская газета",   "url": "https://rg.ru/xml/index.xml",                                           "lang": "ru", "type": "news"},
-    {"name": "Известия",            "url": "https://iz.ru/xml/rss/all.xml",                                         "lang": "ru", "type": "news"},
-    {"name": "Интерфакс",           "url": "https://www.interfax.ru/rss.asp",                                       "lang": "ru", "type": "news"},
-    {"name": "Коммерсантъ",         "url": "https://www.kommersant.ru/RSS/news.xml",                                "lang": "ru", "type": "news"},
-    {"name": "РБК",                 "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",                     "lang": "ru", "type": "news"},
-    # --- Зарубежные ---
-    {"name": "EdSurge",             "url": "https://www.edsurge.com/articles_rss",                                  "lang": "en", "type": "edu"},
-    {"name": "eSchool News",        "url": "https://www.eschoolnews.com/feed/",                                     "lang": "en", "type": "edu"},
-    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/k12/rss.xml",                                "lang": "en", "type": "edu"},
-    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/higher/rss.xml",                             "lang": "en", "type": "edu"},
-    {"name": "Inside Higher Ed",    "url": "https://www.insidehighered.com/rss.xml",                                "lang": "en", "type": "edu"},
-    {"name": "Hechinger Report",    "url": "https://hechingerreport.org/feed/",                                     "lang": "en", "type": "edu"},
-    {"name": "EdTech Innovation Hub", "url": "https://www.edtechinnovationhub.com/news?format=rss",                 "lang": "en", "type": "edu"},
-    {"name": "The Conversation",    "url": "https://theconversation.com/us/education/articles.atom",                "lang": "en", "type": "edu"},
-    {"name": "Google for Education", "url": "https://blog.google/outreach-initiatives/education/rss/",             "lang": "en", "type": "edu"},
-    {"name": "MIT News",            "url": "https://news.mit.edu/rss/topic/education",                              "lang": "en", "type": "edu"},
-    {"name": "MIT News · AI",       "url": "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",        "lang": "en", "type": "tech"},
-    {"name": "The Robot Report",    "url": "https://www.therobotreport.com/feed/",                                  "lang": "en", "type": "tech"},
-    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/robotics.rss",                    "lang": "en", "type": "tech"},
-    {"name": "TechCrunch",          "url": "https://techcrunch.com/feed/",                                          "lang": "en", "type": "tech"},
-    {"name": "MIT Technology Review", "url": "https://www.technologyreview.com/feed/",                              "lang": "en", "type": "tech"},
-    {"name": "BBC",                 "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",                      "lang": "en", "type": "tech"},
-    {"name": "The Verge",           "url": "https://www.theverge.com/rss/tech/index.xml",                           "lang": "en", "type": "tech"},
-    {"name": "Wired",               "url": "https://www.wired.com/feed/rss",                                        "lang": "en", "type": "tech"},
+    # --- Русскоязычные: образование ---
+    {"name": "Учительская газета",  "url": "https://ug.ru/feed/",                                                  "lang": "ru"},
+    {"name": "Педсовет",            "url": "https://pedsovet.org/rss",                                             "lang": "ru"},
+    {"name": "Вести образования",   "url": "https://vogazeta.ru/rss",                                              "lang": "ru"},
+    {"name": "Хабр · Образование",  "url": "https://habr.com/ru/rss/hubs/edu/articles/all/?fl=ru",                 "lang": "ru"},
+    # --- Русскоязычные: ИИ, ИТ, госцифровизация, бизнес ---
+    {"name": "Хабр · ИИ",           "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/?fl=ru", "lang": "ru"},
+    {"name": "Хабр · ML",           "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/all/?fl=ru",    "lang": "ru"},
+    {"name": "D-Russia",            "url": "https://d-russia.ru/feed",                                             "lang": "ru"},
+    {"name": "TAdviser",            "url": "https://www.tadviser.ru/xml/tadviser.xml",                             "lang": "ru"},
+    {"name": "ComNews",             "url": "https://www.comnews.ru/rss",                                           "lang": "ru"},
+    {"name": "CNews",               "url": "https://www.cnews.ru/inc/rss/news.xml",                                "lang": "ru"},
+    {"name": "Ведомости",           "url": "https://www.vedomosti.ru/rss/rubric/technology",                       "lang": "ru"},
+    {"name": "Хайтек",              "url": "https://hightech.fm/feed",                                             "lang": "ru"},
+    {"name": "Naked Science",       "url": "https://naked-science.ru/feed",                                        "lang": "ru"},
+    {"name": "РБК",                 "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",                    "lang": "ru"},
+    {"name": "ТАСС",                "url": "https://tass.ru/rss/v2.xml",                                           "lang": "ru"},
+    {"name": "РИА Новости",         "url": "https://ria.ru/export/rss2/archive/index.xml",                         "lang": "ru"},
+    {"name": "Российская газета",   "url": "https://rg.ru/xml/index.xml",                                          "lang": "ru"},
+    {"name": "Известия",            "url": "https://iz.ru/xml/rss/all.xml",                                        "lang": "ru"},
+    {"name": "Интерфакс",           "url": "https://www.interfax.ru/rss.asp",                                      "lang": "ru"},
+    {"name": "Коммерсантъ",         "url": "https://www.kommersant.ru/RSS/news.xml",                               "lang": "ru"},
+    # --- Зарубежные: образование ---
+    {"name": "EdSurge",             "url": "https://www.edsurge.com/articles_rss",                                 "lang": "en"},
+    {"name": "eSchool News",        "url": "https://www.eschoolnews.com/feed/",                                    "lang": "en"},
+    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/k12/rss.xml",                               "lang": "en"},
+    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/higher/rss.xml",                            "lang": "en"},
+    {"name": "Inside Higher Ed",    "url": "https://www.insidehighered.com/rss.xml",                               "lang": "en"},
+    {"name": "Hechinger Report",    "url": "https://hechingerreport.org/feed/",                                    "lang": "en"},
+    {"name": "EdTech Innovation Hub", "url": "https://www.edtechinnovationhub.com/news?format=rss",                "lang": "en"},
+    {"name": "The Conversation",    "url": "https://theconversation.com/us/education/articles.atom",               "lang": "en"},
+    {"name": "The Conversation",    "url": "https://theconversation.com/us/technology/articles.atom",              "lang": "en"},
+    {"name": "Google for Education", "url": "https://blog.google/outreach-initiatives/education/rss/",            "lang": "en"},
+    {"name": "Training Industry",   "url": "https://trainingindustry.com/feed/",                                   "lang": "en"},
+    {"name": "Chief Learning Officer", "url": "https://www.chieflearningofficer.com/feed/",                        "lang": "en"},
+    # --- Зарубежные: госуправление ---
+    {"name": "Nextgov",             "url": "https://www.nextgov.com/rss/all/",                                     "lang": "en"},
+    {"name": "FedScoop",            "url": "https://fedscoop.com/feed/",                                           "lang": "en"},
+    {"name": "StateScoop",          "url": "https://statescoop.com/feed/",                                         "lang": "en"},
+    {"name": "UKAuthority",         "url": "https://www.ukauthority.com/rss",                                      "lang": "en"},
+    {"name": "Cities Today",        "url": "https://cities-today.com/feed/",                                       "lang": "en"},
+    # --- Зарубежные: ИИ, роботы, бизнес ---
+    {"name": "TechCrunch",          "url": "https://techcrunch.com/category/artificial-intelligence/feed/",        "lang": "en"},
+    {"name": "MIT Technology Review", "url": "https://www.technologyreview.com/feed/",                             "lang": "en"},
+    {"name": "MIT News",            "url": "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",       "lang": "en"},
+    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss",    "lang": "en"},
+    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/robotics.rss",                   "lang": "en"},
+    {"name": "The Robot Report",    "url": "https://www.therobotreport.com/feed/",                                 "lang": "en"},
+    {"name": "Robohub",             "url": "https://robohub.org/feed/",                                            "lang": "en"},
+    {"name": "Google AI",           "url": "https://blog.google/technology/ai/rss/",                               "lang": "en"},
+    {"name": "BBC",                 "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",                     "lang": "en"},
+    {"name": "HR Dive",             "url": "https://www.hrdive.com/feeds/news/",                                   "lang": "en"},
 ]
 
 # Ключевые слова. Ищутся по началу слова: «робот» найдёт «роботы», «робототехника».
-# Слово с восклицательным знаком в конце ищется целиком: «ии!» найдёт «ИИ», но не «России».
-EDU_WORDS = ["образован", "школ", "вуз", "университет", "студент", "учител", "учащ", "ученик", "обучени", "обучающ",
-             "преподават", "педагог", "колледж", "спо!", "егэ", "огэ", "урок", "класс!", "классы", "классов", "лекци",
-             "кафедр", "академи", "курс!", "курсы", "курсов", "edtech", "минпросвещ", "минобрнаук", "рособрнадзор",
-             "просвещени", "профессионалитет", "олимпиад", "школьник", "первоклас",
-             "education", "school", "universit", "college", "student", "teacher", "classroom", "campus",
-             "learning", "learner", "curricul", "k-12", "k12", "higher ed", "edtech", "tutor", "mooc", "faculty",
-             "academic", "pedagog", "literacy", "stem!"]
-TECH_WORDS = ["ии!", "искусственн", "нейросет", "нейронн", "робот", "дрон!", "дроны", "дронов", "дрон-", "беспилотн", "бпла", "chatgpt", "gpt",
-              "gigachat", "yandexgpt", "цифров", "онлайн", "платформ", "edtech", "виртуальн", "vr!", "дистанцион",
-              "электронн", "алгоритм", "программирован", "it-", "ит-", "технолог", "приложени", "ии-", "чат-бот",
-              "ai!", "ai-", "artificial intelligence", "machine learning", "chatbot", "robot", "drone", "humanoid",
-              "digital", "online", "platform", "software", "app!", "apps", "virtual", "algorithm", "coding",
-              "computer science", "technolog", "automation", "generative", "llm", "openai", "gemini", "copilot", "claude"]
-ROBOT_WORDS = ["робот", "дрон!", "дроны", "дронов", "дрона!", "дронам", "дронах", "дрон-", "беспилотн", "бпла", "гуманоид", "манипулятор", "robot", "drone", "humanoid", "uav"]
-AI_WORDS = ["ии!", "ии-", "искусственн", "нейросет", "нейронн", "chatgpt", "gpt", "gigachat", "yandexgpt", "ai!", "ai-",
-            "artificial intelligence", "machine learning", "chatbot", "чат-бот", "generative", "llm", "openai", "gemini",
-            "copilot", "claude", "языков", "language model", "deepseek"]
-# Слова-стоп: новости с ними не берём (спорт, происшествия, военные сводки и т.п.)
-STOP_WORDS = ["футбол", "хоккей", "погиб", "убий", "дтп", "пожар", "приговор", "casino", "betting", "атак", "удар",
-              "обстрел", "всу", "ранен", "взрыв", "теракт", "alcohol", "proof of age", "погод", "казино"]
+# Слово с «!» в конце ищется целиком: «ии!» найдёт «ИИ», но не «России».
 
-MAX_PER_SOURCE = 2       # не больше N новостей от одного издания в дайджесте
+# ОБЯЗАТЕЛЬНОЕ условие: в новости должен быть ИИ или роботы. Иначе новость не берётся.
+CORE_WORDS = ["ии!", "ии-", "искусственн", "нейросет", "нейронн", "машинн обучен", "машинного обучен", "chatgpt", "gpt",
+              "gigachat", "yandexgpt", "deepseek", "языков модел", "llm", "робот", "гуманоид", "генеративн", "чат-бот", "чатбот",
+              "openai", "anthropic", "claude", "gemini",
+              "copilot", "midjourney", "sora",
+              "ai!", "ai-", "artificial intelligence", "machine learning", "deep learning", "neural", "generative",
+              "chatbot", "language model", "robot", "humanoid", "agentic", "genai"]
+# Дроны и беспилотники намеренно не входят в CORE_WORDS: в новостях это почти всегда военные сводки.
 
-SECTIONS = [  # порядок рубрик в дайджесте
-    ("robots", "🤖 Роботы и образование"),
-    ("ai",     "🧠 ИИ и образование"),
-    ("edtech", "💻 EdTech"),
+# Рубрики. Порядок важен: новость попадает в первую рубрику, чьи слова в ней найдены.
+SECTIONS = [
+    {"id": "edu", "name": "ИИ и роботы в образовании", "emoji": "🎓",
+     "words": ["образован", "школ", "вуз", "университет", "студент", "учител", "учащ", "ученик", "обучени", "обучающ", "обучать",
+               "преподават", "педагог", "колледж", "спо!", "егэ", "урок", "лекци", "кафедр", "академи", "курс!", "курсы", "курсов",
+               "edtech", "минпросвещ", "минобрнаук", "просвещени", "профессионалитет", "школьник", "переподготов", "повышени квалификац",
+               "навык", "компетенц", "грамотност",
+               "education", "school", "universit", "college", "student", "teacher", "classroom", "campus", "learning", "learner",
+               "curricul", "k-12", "k12", "higher ed", "tutor", "mooc", "faculty", "academic", "pedagog", "literacy", "training",
+               "upskill", "reskill", "workforce development", "skills"]},
+    {"id": "gov", "name": "ИИ в госуправлении", "emoji": "🏛",
+     "words": ["правительств", "госуправлен", "госуслуг", "министерств", "минцифр", "мэри", "губернатор", "региональн", "муниципал",
+               "город!", "города", "городск", "умный город", "субсиди", "грант", "госпрограмм", "нацпроект", "госдум", "закон", "регулир",
+               "стратеги", "власт", "ведомств", "чиновник", "бюджет", "оон", "ес!", "евросоюз",
+               "government", "governance", "public sector", "federal", "ministry", "minister", "parliament", "congress", "senate",
+               "regulat", "legislat", "policy", "policies", "mayor", "city", "cities", "municipal", "smart city", "subsid", "grant",
+               "national strategy", "agency", "agencies", "white house", "european commission", "eu!", "un!", "oecd", "unesco"]},
+    {"id": "biz", "name": "ИИ в бизнесе и управлении", "emoji": "🏢",
+     "words": ["компани", "бизнес", "корпорат", "предприяти", "сотрудник", "менеджмент", "руководител", "топ-менедж", "hr!", "кадр",
+               "производств", "банк", "ритейл", "промышлен", "внедрил", "внедрен", "рынок труда", "заменит", "автоматизац",
+               "company", "companies", "business", "enterprise", "corporate", "employee", "employer", "management", "manager",
+               "executive", "ceo!", "workforce", "workplace", "hr!", "industry", "productivity", "automation", "job!", "jobs", "labor market"]},
+    {"id": "robots", "name": "Роботы и их обучение", "emoji": "🤖",
+     "words": ["робот", "дрон!", "дроны", "дронов", "беспилотн", "бпла", "гуманоид", "манипулятор",
+               "robot", "drone", "humanoid", "autonomous", "manipulat"]},
+    {"id": "world", "name": "Развитие ИИ и общество", "emoji": "🌍", "words": []},  # всё остальное с ИИ
 ]
+
+# Слова-стоп: новости с ними не берём (реклама курсов, спорт, происшествия, военные сводки).
+STOP_WORDS = ["футбол", "хоккей", "погиб", "убий", "дтп", "пожар", "приговор", "casino", "betting", "атак", "удар", "обстрел",
+              "всу", "ранен", "взрыв", "теракт", "погод", "казино", "сбит", "сбил", "пво!", "ксир", "нато", "минобороны", "ракет",
+              "перехват", "боев", "фронт", "shot down", "air defense", "pentagon", "army", "navy", "warfare", "роботакси", "robotaxi", "скидк", "промокод", "распродаж", "черная пятница", "видеокарт",
+              "смартфон", "iphone", "игр!", "игры", "геймер", "military", "missile", "weapon", "strike!", "war!", "porn", "crypto",
+              "bitcoin", "stock price", "акции выросли", "котировк"]
 
 # ============================================================
 # ДАЛЬШЕ — МЕХАНИКА
 # ============================================================
 
 STATE_FILE = "posted.json"
-UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128 TechnopulsDigest/1.0"}
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128 TechnopulsDigest/2.0"}
 MSK = timezone(timedelta(hours=3))
+_rx = {}
 
 
 def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
-_rx = {}
 def has(text, words):
+    if not words:
+        return False
     key = id(words)
     if key not in _rx:
         parts = []
@@ -130,11 +166,11 @@ def has(text, words):
     return bool(_rx[key].search(text))
 
 
-def clean(html_text, limit=220):
+def clean(html_text, limit=300):
     t = re.sub(r"<[^>]+>", " ", html_text or "")
     t = html.unescape(re.sub(r"\s+", " ", t)).strip()
     if len(t) > limit:
-        t = t[:limit].rsplit(" ", 1)[0] + "…"
+        t = t[:limit].rsplit(" ", 1)[0].rstrip(",;:—-") + "…"
     return t
 
 
@@ -146,6 +182,57 @@ def entry_date(e):
             except Exception:
                 pass
     return datetime.now(timezone.utc)
+
+
+def entry_image(e):
+    """Картинка из самой ленты, если издание её отдаёт."""
+    for m in (e.get("media_content") or []) + (e.get("media_thumbnail") or []):
+        u = m.get("url", "")
+        if u and (m.get("type", "").startswith("image") or re.search(r"\.(jpe?g|png|webp|gif)(\?|$)", u, re.I) or "type" not in m):
+            return u
+    for enc in e.get("enclosures") or []:
+        if enc.get("type", "").startswith("image") and enc.get("href"):
+            return enc["href"]
+    raw = (e.get("summary") or "") + "".join(c.get("value", "") for c in (e.get("content") or []))
+    m = re.search(r'<img[^>]+src="([^"]+)"', raw)
+    return m.group(1) if m else ""
+
+
+def page_image(link):
+    """Главная картинка со страницы статьи (og:image), если в ленте её не было."""
+    try:
+        r = requests.get(link, headers=UA, timeout=12)
+        m = re.search(r'<meta[^>]+property="og:image(?::url)?"[^>]+content="([^"]+)"', r.text, re.I) or \
+            re.search(r'<meta[^>]+content="([^"]+)"[^>]+property="og:image(?::url)?"', r.text, re.I) or \
+            re.search(r'<meta[^>]+name="twitter:image"[^>]+content="([^"]+)"', r.text, re.I)
+        return html.unescape(m.group(1)) if m else ""
+    except Exception:
+        return ""
+
+
+def download_image(url):
+    """Скачивает картинку и приводит к JPEG приемлемого размера. Возвращает байты или None."""
+    if not url or not url.startswith("http"):
+        return None
+    try:
+        from PIL import Image
+        r = requests.get(url, headers=UA, timeout=20)
+        if not r.ok or len(r.content) < 3000 or len(r.content) > 15_000_000:
+            return None
+        im = Image.open(io.BytesIO(r.content))
+        if getattr(im, "n_frames", 1) > 1:
+            im.seek(0)
+        im = im.convert("RGB")
+        if im.width < 240 or im.height < 160:
+            return None
+        if im.width > 1600:
+            im = im.resize((1600, int(im.height * 1600 / im.width)))
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=85, optimize=True)
+        return out.getvalue()
+    except Exception as ex:
+        log(f"  картинка не скачалась ({url[:60]}): {ex}")
+        return None
 
 
 def load_state():
@@ -165,11 +252,17 @@ def save_state(state):
 def fetch(feed):
     try:
         r = requests.get(feed["url"], headers=UA, timeout=30)
-        d = feedparser.parse(r.content)
-        return d.entries
+        return feedparser.parse(r.content).entries
     except Exception as ex:
         log(f"  не ответил: {feed['name']} ({ex})")
         return []
+
+
+def classify(text):
+    for s in SECTIONS:
+        if not s["words"] or has(text, s["words"]):
+            return s["id"]
+    return "world"
 
 
 def collect(state):
@@ -190,24 +283,20 @@ def collect(state):
             date = entry_date(e)
             if date < since:
                 continue
-            summary = clean(e.get("summary") or (e.get("content") or [{}])[0].get("value", ""))
+            summary = clean(e.get("summary") or (e.get("content") or [{}])[0].get("value", ""), SUMMARY_LEN)
             if summary.lower().startswith(title.lower()[:40]):
-                summary = summary[len(title):].strip(" .:-—")
+                summary = clean(summary[len(title):].strip(" .:-—"), SUMMARY_LEN)
             summary = re.sub(r"^[\w.@… ]{0,40}?(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d\d/\d\d/\d{4} - \d\d:\d\d [AP]M\s*", "", summary)
-            text = f" {title} {summary} ".lower()
-            if has(text, STOP_WORDS):
+            text = f" {title} {summary} "
+            if not has(text, CORE_WORDS) or has(text, STOP_WORDS):
                 continue
-            edu, tech = has(text, EDU_WORDS), has(text, TECH_WORDS)
-            ok = {"edu": tech, "tech": edu, "news": edu and tech}[f["type"]]
-            if not ok:
-                continue
-            section = "robots" if has(text, ROBOT_WORDS) else "ai" if has(text, AI_WORDS) else "edtech"
-            # Оценка: свежее и из профильных изданий — выше
+            section = classify(text)
+            # Оценка: свежее выше; тематические рубрики выше общей; новость, где ИИ уже в заголовке, — выше
             score = (date - since).total_seconds() / 3600
-            score += 12 if f["type"] == "edu" else 0
-            score += 6 if section != "edtech" else 0
-            items.append({"title": title, "link": link, "summary": summary, "source": f["name"],
-                          "lang": f["lang"], "section": section, "date": date, "score": score})
+            score += 10 if section in ("edu", "gov") else 6 if section in ("biz", "robots") else 0
+            score += 5 if has(f" {title} ", CORE_WORDS) else 0
+            items.append({"title": title, "link": link, "summary": summary, "source": f["name"], "lang": f["lang"],
+                          "section": section, "date": date, "score": score, "img": entry_image(e)})
             seen_titles.add(key)
             kept += 1
         log(f"{f['name']}: {len(entries)} в ленте, подошло {kept}")
@@ -217,29 +306,37 @@ def collect(state):
 def select(items):
     items.sort(key=lambda i: -i["score"])
     chosen, per, per_src = [], {}, {}
-    # Сначала по одной из каждой рубрики, чтобы дайджест был разнообразным
-    for sec, _ in SECTIONS:
+
+    def ok(i):
+        return i not in chosen and per.get(i["section"], 0) < MAX_PER_SECTION and per_src.get(i["source"], 0) < MAX_PER_SOURCE
+
+    def take(i):
+        chosen.append(i)
+        per[i["section"]] = per.get(i["section"], 0) + 1
+        per_src[i["source"]] = per_src.get(i["source"], 0) + 1
+
+    for s in SECTIONS:  # по одной из каждой рубрики для разнообразия
         for i in items:
-            if i["section"] == sec and i not in chosen:
-                chosen.append(i); per[sec] = 1; per_src[i["source"]] = 1
+            if i["section"] == s["id"] and ok(i):
+                take(i)
                 break
     for i in items:
         if len(chosen) >= MAX_ITEMS:
             break
-        if i in chosen or per.get(i["section"], 0) >= MAX_PER_SECTION or per_src.get(i["source"], 0) >= MAX_PER_SOURCE:
-            continue
-        chosen.append(i); per[i["section"]] = per.get(i["section"], 0) + 1; per_src[i["source"]] = per_src.get(i["source"], 0) + 1
-    return chosen
+        if ok(i):
+            take(i)
+    order = {s["id"]: n for n, s in enumerate(SECTIONS)}
+    chosen.sort(key=lambda i: (order[i["section"]], -i["score"]))
+    return chosen[:MAX_ITEMS]
 
 
 def translate(text):
-    """Переводит с английского. Сначала Google, если он не отвечает — MyMemory, иначе оставляет как есть."""
+    """Перевод с английского: Google, при сбое — MyMemory, иначе оригинал."""
     if not text:
         return text
     try:
         r = requests.get("https://translate.googleapis.com/translate_a/single",
-                         params={"client": "gtx", "sl": "en", "tl": "ru", "dt": "t", "q": text},
-                         headers=UA, timeout=20)
+                         params={"client": "gtx", "sl": "en", "tl": "ru", "dt": "t", "q": text}, headers=UA, timeout=20)
         if r.ok:
             out = "".join(p[0] for p in r.json()[0] if p and p[0]).strip()
             if out:
@@ -248,8 +345,8 @@ def translate(text):
         pass
     try:
         params = {"q": text[:500], "langpair": "en|ru"}
-        if os.environ.get("MYMEMORY_EMAIL"):
-            params["de"] = os.environ["MYMEMORY_EMAIL"]
+        if os.environ.get("MYMEMORY_EMAIL", "").strip():
+            params["de"] = os.environ["MYMEMORY_EMAIL"].strip()
         r = requests.get("https://api.mymemory.translated.net/get", params=params, headers=UA, timeout=20)
         out = r.json().get("responseData", {}).get("translatedText", "")
         if out and "MYMEMORY WARNING" not in out:
@@ -260,52 +357,75 @@ def translate(text):
     return text
 
 
-def build_messages(chosen):
+def build_posts(chosen):
+    """Возвращает список постов: первый — шапка (текст), остальные — новости (текст + картинка)."""
     now = datetime.now(MSK)
-    when = "утренний" if now.hour < 14 else "вечерний"
+    when = "Утренний" if now.hour < 14 else "Вечерний"
     months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-    head = f"<b>{html.escape(CHANNEL_TITLE)}</b>\n{when.capitalize()} дайджест, {now.day} {months[now.month - 1]}\n"
-    blocks = [head]
-    for sec, name in SECTIONS:
-        rows = [i for i in chosen if i["section"] == sec]
-        if not rows:
-            continue
-        block = f"\n<b>{name}</b>\n"
-        for i in rows:
-            title, summary = i["title"], i["summary"]
-            if i["lang"] == "en":
-                title = translate(title)
-                summary = translate(summary)
-            block += f"\n▪️ <a href=\"{html.escape(i['link'])}\">{html.escape(title)}</a>\n"
-            if summary:
-                block += f"{html.escape(summary)}\n"
-            block += f"<i>{html.escape(i['source'])}</i>\n"
-        blocks.append(block)
-    # Телеграм ограничивает сообщение 4096 символами — режем по рубрикам
-    messages, cur = [], ""
-    for b in blocks:
-        if len(cur) + len(b) > 3900 and cur:
-            messages.append(cur); cur = ""
-        cur += b
-    if cur:
-        messages.append(cur)
-    return messages
+    sec = {s["id"]: s for s in SECTIONS}
+    counts = {}
+    for i in chosen:
+        counts[i["section"]] = counts.get(i["section"], 0) + 1
+    head = f"<b>{html.escape(CHANNEL_TITLE)}</b>\n{when} выпуск, {now.day} {months[now.month - 1]} — {len(chosen)} {plural(len(chosen))}\n\n"
+    head += "\n".join(f"{sec[k]['emoji']} {sec[k]['name']} — {counts[k]}" for k in [s["id"] for s in SECTIONS] if k in counts)
+    posts = [{"text": head, "photo": None}]
+
+    for i in chosen:
+        title, summary = i["title"], i["summary"]
+        if i["lang"] == "en":
+            title = translate(title)
+            summary = translate(summary)
+        s = sec[i["section"]]
+        link = html.escape(i["link"])
+        caption = f"{s['emoji']} <b>{html.escape(title)}</b>\n\n"
+        tail = f"\n<a href=\"{link}\">Читать в источнике</a> — {html.escape(i['source'])}"
+        room = 1000 - len(caption) - len(tail)
+        if summary and room > 60:
+            caption += html.escape(clean(summary, room)) + "\n"
+        caption += tail
+        # Картинка: из ленты, иначе со страницы статьи
+        photo = download_image(i["img"]) or download_image(page_image(i["link"]))
+        if not photo:
+            log(f"  без картинки: {i['title'][:60]}")
+        posts.append({"text": caption, "photo": photo, "link": i["link"]})
+    return posts
 
 
-def send(messages):
-    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+def plural(n):
+    if n % 10 == 1 and n % 100 != 11:
+        return "новость"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "новости"
+    return "новостей"
+
+
+def send(posts):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat:
-        log("Ключ бота или адрес канала не заданы — режим проверки, печатаю дайджест:\n")
-        print("\n\n-----\n\n".join(messages))
+        log("Ключ бота или адрес канала не заданы — режим проверки, печатаю выпуск:\n")
+        for p in posts:
+            print(("[ФОТО] " if p.get("photo") else "[без фото] ") + p["text"] + "\n\n-----\n")
         return False
-    for m in messages:
-        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                          json={"chat_id": chat, "text": m, "parse_mode": "HTML",
-                                "link_preview_options": {"is_disabled": True}}, timeout=30)
-        if not r.ok:
-            log("Телеграм ответил ошибкой:", r.text)
-            r.raise_for_status()
-        time.sleep(1)
+    api = f"https://api.telegram.org/bot{token}/"
+    for p in posts:
+        if p.get("photo"):
+            r = requests.post(api + "sendPhoto", data={"chat_id": chat, "caption": p["text"], "parse_mode": "HTML"},
+                              files={"photo": ("news.jpg", p["photo"], "image/jpeg")}, timeout=60)
+            if not r.ok:
+                log("  sendPhoto не прошёл, отправляю текстом:", r.text[:200])
+        if not p.get("photo") or not r.ok:
+            opts = {"is_disabled": False, "prefer_large_media": True, "show_above_text": True}
+            if p.get("link"):
+                opts["url"] = p["link"]
+            else:
+                opts = {"is_disabled": True}
+            r = requests.post(api + "sendMessage", json={"chat_id": chat, "text": p["text"], "parse_mode": "HTML",
+                                                         "link_preview_options": opts}, timeout=30)
+            if not r.ok:
+                log("Телеграм ответил ошибкой:", r.text)
+                r.raise_for_status()
+        time.sleep(3)  # чтобы не упереться в лимит Телеграма на частоту постов
     return True
 
 
@@ -317,8 +437,8 @@ def main():
     if not chosen:
         log("Нечего публиковать.")
         return
-    messages = build_messages(chosen)
-    if send(messages):
+    posts = build_posts(chosen)
+    if send(posts):
         state["posted"].extend(i["link"] for i in chosen)
         save_state(state)
         log(f"Опубликовано новостей: {len(chosen)}")
