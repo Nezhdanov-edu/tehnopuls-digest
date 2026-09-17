@@ -31,13 +31,12 @@ import requests, feedparser
 # НАСТРОЙКИ — можно менять без знания программирования
 # ============================================================
 
-MAX_ITEMS = 8            # сколько новостей максимум в одном выпуске
-MAX_PER_SECTION = 3      # сколько максимум в одной рубрике
+MAX_ITEMS = 8            # размер выпуска; пересчитывается из QUOTAS ниже
+MAX_PER_SECTION = 4      # сколько максимум в одной рубрике
 MAX_PER_SOURCE = 2       # не больше N новостей от одного издания
 LOOKBACK_HOURS = 30      # брать новости не старше N часов
 CHANNEL_TITLE = "Технопульс · Образование"
 SUMMARY_LEN = 260        # длина описания из RSS (используется при отборе и как запасной вариант)
-CANDIDATES = 28          # сколько лучших по ключевым словам новостей показать модели для отбора
 BODY_MIN, BODY_MAX = 1200, 2000 # длина заметки, знаков (пост в Телеграме — до 4096)
 MIN_ARTICLE = 600        # если со страницы не удалось прочитать хотя бы столько знаков, новость не берётся
 CLAUDE_MODEL = "claude-sonnet-4-6"      # модель Claude по умолчанию
@@ -49,61 +48,137 @@ CHANNEL_ABOUT = ("Телеграм-канал о том, как искусств
                  "а также об обучении роботов и развитии ИИ. Аудитория — руководители образовательных организаций, "
                  "чиновники, преподаватели, HR и руководители компаний в России.")
 
-# Ленты. lang: ru/en. Все ленты фильтруются одинаково: нужна связь с ИИ или роботами.
+# Ленты. lang: ru/en; country — страна издания (для квот и подписи).
+# Квоты выпуска считаются по стране издания: ru — Россия, us — США, всё остальное — «другие страны».
 FEEDS = [
-    # --- Русскоязычные: образование ---
-    {"name": "Учительская газета",  "url": "https://ug.ru/feed/",                                                  "lang": "ru"},
-    {"name": "Педсовет",            "url": "https://pedsovet.org/rss",                                             "lang": "ru"},
-    {"name": "Вести образования",   "url": "https://vogazeta.ru/rss",                                              "lang": "ru"},
-    {"name": "Хабр · Образование",  "url": "https://habr.com/ru/rss/hubs/edu/articles/all/?fl=ru",                 "lang": "ru"},
-    # --- Русскоязычные: ИИ, ИТ, госцифровизация, бизнес ---
-    {"name": "Хабр · ИИ",           "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/?fl=ru", "lang": "ru"},
-    {"name": "Хабр · ML",           "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/all/?fl=ru",    "lang": "ru"},
-    {"name": "D-Russia",            "url": "https://d-russia.ru/feed",                                             "lang": "ru"},
-    {"name": "TAdviser",            "url": "https://www.tadviser.ru/xml/tadviser.xml",                             "lang": "ru"},
-    {"name": "ComNews",             "url": "https://www.comnews.ru/rss",                                           "lang": "ru"},
-    {"name": "CNews",               "url": "https://www.cnews.ru/inc/rss/news.xml",                                "lang": "ru"},
-    {"name": "Ведомости",           "url": "https://www.vedomosti.ru/rss/rubric/technology",                       "lang": "ru"},
-    {"name": "Хайтек",              "url": "https://hightech.fm/feed",                                             "lang": "ru"},
-    {"name": "Naked Science",       "url": "https://naked-science.ru/feed",                                        "lang": "ru"},
-    {"name": "РБК",                 "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",                    "lang": "ru"},
-    {"name": "ТАСС",                "url": "https://tass.ru/rss/v2.xml",                                           "lang": "ru"},
-    {"name": "РИА Новости",         "url": "https://ria.ru/export/rss2/archive/index.xml",                         "lang": "ru"},
-    {"name": "Российская газета",   "url": "https://rg.ru/xml/index.xml",                                          "lang": "ru"},
-    {"name": "Известия",            "url": "https://iz.ru/xml/rss/all.xml",                                        "lang": "ru"},
-    {"name": "Интерфакс",           "url": "https://www.interfax.ru/rss.asp",                                      "lang": "ru"},
-    {"name": "Коммерсантъ",         "url": "https://www.kommersant.ru/RSS/news.xml",                               "lang": "ru"},
-    # --- Зарубежные: образование ---
-    {"name": "EdSurge",             "url": "https://www.edsurge.com/articles_rss",                                 "lang": "en"},
-    {"name": "eSchool News",        "url": "https://www.eschoolnews.com/feed/",                                    "lang": "en"},
-    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/k12/rss.xml",                               "lang": "en"},
-    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/higher/rss.xml",                            "lang": "en"},
-    {"name": "Inside Higher Ed",    "url": "https://www.insidehighered.com/rss.xml",                               "lang": "en"},
-    {"name": "Hechinger Report",    "url": "https://hechingerreport.org/feed/",                                    "lang": "en"},
-    {"name": "EdTech Innovation Hub", "url": "https://www.edtechinnovationhub.com/news?format=rss",                "lang": "en"},
-    {"name": "The Conversation",    "url": "https://theconversation.com/us/education/articles.atom",               "lang": "en"},
-    {"name": "The Conversation",    "url": "https://theconversation.com/us/technology/articles.atom",              "lang": "en"},
-    {"name": "Google for Education", "url": "https://blog.google/outreach-initiatives/education/rss/",            "lang": "en"},
-    {"name": "Training Industry",   "url": "https://trainingindustry.com/feed/",                                   "lang": "en"},
-    {"name": "Chief Learning Officer", "url": "https://www.chieflearningofficer.com/feed/",                        "lang": "en"},
-    # --- Зарубежные: госуправление ---
-    {"name": "Nextgov",             "url": "https://www.nextgov.com/rss/all/",                                     "lang": "en"},
-    {"name": "FedScoop",            "url": "https://fedscoop.com/feed/",                                           "lang": "en"},
-    {"name": "StateScoop",          "url": "https://statescoop.com/feed/",                                         "lang": "en"},
-    {"name": "UKAuthority",         "url": "https://www.ukauthority.com/rss",                                      "lang": "en"},
-    {"name": "Cities Today",        "url": "https://cities-today.com/feed/",                                       "lang": "en"},
-    # --- Зарубежные: ИИ, роботы, бизнес ---
-    {"name": "TechCrunch",          "url": "https://techcrunch.com/category/artificial-intelligence/feed/",        "lang": "en"},
-    {"name": "MIT Technology Review", "url": "https://www.technologyreview.com/feed/",                             "lang": "en"},
-    {"name": "MIT News",            "url": "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",       "lang": "en"},
-    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss",    "lang": "en"},
-    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/robotics.rss",                   "lang": "en"},
-    {"name": "The Robot Report",    "url": "https://www.therobotreport.com/feed/",                                 "lang": "en"},
-    {"name": "Robohub",             "url": "https://robohub.org/feed/",                                            "lang": "en"},
-    {"name": "Google AI",           "url": "https://blog.google/technology/ai/rss/",                               "lang": "en"},
-    {"name": "BBC",                 "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",                     "lang": "en"},
-    {"name": "HR Dive",             "url": "https://www.hrdive.com/feeds/news/",                                   "lang": "en"},
+    # --- Россия ---
+    {"name": "Учительская газета",  "url": "https://ug.ru/feed/",                                                  "lang": "ru", "country": "Россия"},
+    {"name": "Педсовет",            "url": "https://pedsovet.org/rss",                                             "lang": "ru", "country": "Россия"},
+    {"name": "Вести образования",   "url": "https://vogazeta.ru/rss",                                              "lang": "ru", "country": "Россия"},
+    {"name": "Хабр · Образование",  "url": "https://habr.com/ru/rss/hubs/edu/articles/all/?fl=ru",                 "lang": "ru", "country": "Россия"},
+    {"name": "Хабр · ИИ",           "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/?fl=ru", "lang": "ru", "country": "Россия"},
+    {"name": "D-Russia",            "url": "https://d-russia.ru/feed",                                             "lang": "ru", "country": "Россия"},
+    {"name": "TAdviser",            "url": "https://www.tadviser.ru/xml/tadviser.xml",                             "lang": "ru", "country": "Россия"},
+    {"name": "ComNews",             "url": "https://www.comnews.ru/rss",                                           "lang": "ru", "country": "Россия"},
+    {"name": "CNews",               "url": "https://www.cnews.ru/inc/rss/news.xml",                                "lang": "ru", "country": "Россия"},
+    {"name": "Ведомости",           "url": "https://www.vedomosti.ru/rss/rubric/technology",                       "lang": "ru", "country": "Россия"},
+    {"name": "Хайтек",              "url": "https://hightech.fm/feed",                                             "lang": "ru", "country": "Россия"},
+    {"name": "Naked Science",       "url": "https://naked-science.ru/feed",                                        "lang": "ru", "country": "Россия"},
+    {"name": "РБК",                 "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",                    "lang": "ru", "country": "Россия"},
+    {"name": "ТАСС",                "url": "https://tass.ru/rss/v2.xml",                                           "lang": "ru", "country": "Россия"},
+    {"name": "РИА Новости",         "url": "https://ria.ru/export/rss2/archive/index.xml",                         "lang": "ru", "country": "Россия"},
+    {"name": "Российская газета",   "url": "https://rg.ru/xml/index.xml",                                          "lang": "ru", "country": "Россия"},
+    {"name": "Известия",            "url": "https://iz.ru/xml/rss/all.xml",                                        "lang": "ru", "country": "Россия"},
+    {"name": "Интерфакс",           "url": "https://www.interfax.ru/rss.asp",                                      "lang": "ru", "country": "Россия"},
+    {"name": "Коммерсантъ",         "url": "https://www.kommersant.ru/RSS/news.xml",                               "lang": "ru", "country": "Россия"},
+    # --- США ---
+    {"name": "EdSurge",             "url": "https://www.edsurge.com/articles_rss",                                 "lang": "en", "country": "США"},
+    {"name": "eSchool News",        "url": "https://www.eschoolnews.com/feed/",                                    "lang": "en", "country": "США"},
+    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/k12/rss.xml",                               "lang": "en", "country": "США"},
+    {"name": "EdTech Magazine",     "url": "https://edtechmagazine.com/higher/rss.xml",                            "lang": "en", "country": "США"},
+    {"name": "Inside Higher Ed",    "url": "https://www.insidehighered.com/rss.xml",                               "lang": "en", "country": "США"},
+    {"name": "Hechinger Report",    "url": "https://hechingerreport.org/feed/",                                    "lang": "en", "country": "США"},
+    {"name": "The Conversation US", "url": "https://theconversation.com/us/education/articles.atom",               "lang": "en", "country": "США"},
+    {"name": "Google for Education", "url": "https://blog.google/outreach-initiatives/education/rss/",            "lang": "en", "country": "США"},
+    {"name": "Training Industry",   "url": "https://trainingindustry.com/feed/",                                   "lang": "en", "country": "США"},
+    {"name": "Chief Learning Officer", "url": "https://www.chieflearningofficer.com/feed/",                        "lang": "en", "country": "США"},
+    {"name": "Nextgov",             "url": "https://www.nextgov.com/rss/all/",                                     "lang": "en", "country": "США"},
+    {"name": "FedScoop",            "url": "https://fedscoop.com/feed/",                                           "lang": "en", "country": "США"},
+    {"name": "StateScoop",          "url": "https://statescoop.com/feed/",                                         "lang": "en", "country": "США"},
+    {"name": "TechCrunch",          "url": "https://techcrunch.com/category/artificial-intelligence/feed/",        "lang": "en", "country": "США"},
+    {"name": "MIT Technology Review", "url": "https://www.technologyreview.com/feed/",                             "lang": "en", "country": "США"},
+    {"name": "MIT News",            "url": "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",       "lang": "en", "country": "США"},
+    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss",    "lang": "en", "country": "США"},
+    {"name": "IEEE Spectrum",       "url": "https://spectrum.ieee.org/feeds/topic/robotics.rss",                   "lang": "en", "country": "США"},
+    {"name": "The Robot Report",    "url": "https://www.therobotreport.com/feed/",                                 "lang": "en", "country": "США"},
+    {"name": "Google AI",           "url": "https://blog.google/technology/ai/rss/",                               "lang": "en", "country": "США"},
+    {"name": "HR Dive",             "url": "https://www.hrdive.com/feeds/news/",                                   "lang": "en", "country": "США"},
+    # --- Другие страны ---
+    {"name": "BBC",                 "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",                     "lang": "en", "country": "Великобритания"},
+    {"name": "UKAuthority",         "url": "https://www.ukauthority.com/rss",                                      "lang": "en", "country": "Великобритания"},
+    {"name": "FE News",             "url": "https://www.fenews.co.uk/feed/",                                       "lang": "en", "country": "Великобритания"},
+    {"name": "Cities Today",        "url": "https://cities-today.com/feed/",                                       "lang": "en", "country": "Великобритания"},
+    {"name": "EdTech Innovation Hub", "url": "https://www.edtechinnovationhub.com/news?format=rss",                "lang": "en", "country": "Великобритания"},
+    {"name": "The Conversation UK", "url": "https://theconversation.com/uk/education/articles.atom",               "lang": "en", "country": "Великобритания"},
+    {"name": "The Conversation UK", "url": "https://theconversation.com/uk/technology/articles.atom",              "lang": "en", "country": "Великобритания"},
+    {"name": "Euronews",            "url": "https://www.euronews.com/rss?level=vertical&name=next",                "lang": "en", "country": "ЕС"},
+    {"name": "France 24",           "url": "https://www.france24.com/en/rss",                                      "lang": "en", "country": "Франция"},
+    {"name": "Robohub",             "url": "https://robohub.org/feed/",                                            "lang": "en", "country": "Швейцария"},
+    {"name": "The Conversation AU", "url": "https://theconversation.com/au/education/articles.atom",               "lang": "en", "country": "Австралия"},
+    {"name": "The Conversation AU", "url": "https://theconversation.com/au/technology/articles.atom",              "lang": "en", "country": "Австралия"},
+    {"name": "ABC News",            "url": "https://www.abc.net.au/news/feed/2942460/rss.xml",                     "lang": "en", "country": "Австралия"},
+    {"name": "The Conversation CA", "url": "https://theconversation.com/ca/education/articles.atom",               "lang": "en", "country": "Канада"},
+    {"name": "CBC",                 "url": "https://www.cbc.ca/webfeed/rss/rss-technology",                        "lang": "en", "country": "Канада"},
+    {"name": "The Conversation Africa", "url": "https://theconversation.com/africa/education/articles.atom",       "lang": "en", "country": "Африка"},
+    {"name": "TechCabal",           "url": "https://techcabal.com/feed/",                                          "lang": "en", "country": "Нигерия"},
+    {"name": "South China Morning Post", "url": "https://www.scmp.com/rss/36/feed",                                "lang": "en", "country": "Гонконг"},
+    {"name": "Global Times",        "url": "https://www.globaltimes.cn/rss/outbrain.xml",                          "lang": "en", "country": "Китай"},
+    {"name": "Nikkei Asia",         "url": "https://asia.nikkei.com/rss/feed/nar",                                 "lang": "en", "country": "Япония"},
+    {"name": "The Japan Times",     "url": "https://www.japantimes.co.jp/feed/",                                   "lang": "en", "country": "Япония"},
+    {"name": "The Korea Herald",    "url": "https://www.koreaherald.com/rss/newsAll",                              "lang": "en", "country": "Южная Корея"},
+    {"name": "Al Jazeera",          "url": "https://www.aljazeera.com/xml/rss/all.xml",                            "lang": "en", "country": "Катар"},
+    {"name": "Anadolu",             "url": "https://www.aa.com.tr/en/rss/default?cat=science-technology",          "lang": "en", "country": "Турция"},
+    {"name": "Mexico News Daily",   "url": "https://mexiconewsdaily.com/feed/",                                    "lang": "en", "country": "Мексика"},
+    {"name": "Tengrinews",          "url": "https://tengrinews.kz/news.rss",                                       "lang": "ru", "country": "Казахстан"},
+    {"name": "Kazinform",           "url": "https://www.inform.kz/rss/rus.xml",                                    "lang": "ru", "country": "Казахстан"},
+    {"name": "Gazeta.uz",           "url": "https://www.gazeta.uz/ru/rss/",                                        "lang": "ru", "country": "Узбекистан"},
+    # --- БРИКС+ ---
+    {"name": "Business Standard",   "url": "https://www.business-standard.com/rss/technology-108.rss",             "lang": "en", "country": "Индия"},
+    {"name": "NDTV",                "url": "https://feeds.feedburner.com/gadgets360-latest",                       "lang": "en", "country": "Индия"},
+    {"name": "Scroll.in",           "url": "https://feeds.feedburner.com/ScrollinArticles.rss",                    "lang": "en", "country": "Индия"},
+    {"name": "Inc42",               "url": "https://inc42.com/feed/",                                              "lang": "en", "country": "Индия"},
+    {"name": "Medianama",           "url": "https://www.medianama.com/feed/",                                      "lang": "en", "country": "Индия"},
+    {"name": "TechNode",            "url": "https://technode.com/feed/",                                           "lang": "en", "country": "Китай"},
+    {"name": "Pandaily",            "url": "https://pandaily.com/feed/",                                           "lang": "en", "country": "Китай"},
+    {"name": "Sixth Tone",          "url": "https://www.sixthtone.com/rss",                                        "lang": "en", "country": "Китай"},
+    {"name": "Brazil Reports",      "url": "https://brazilreports.com/feed/",                                      "lang": "en", "country": "Бразилия"},
+    {"name": "The Rio Times",       "url": "https://www.riotimesonline.com/feed/",                                 "lang": "en", "country": "Бразилия"},
+    {"name": "TechCentral",         "url": "https://techcentral.co.za/feed/",                                      "lang": "en", "country": "ЮАР"},
+    {"name": "IOL",                 "url": "https://www.iol.co.za/rss",                                            "lang": "en", "country": "ЮАР"},
+    {"name": "Egypt Independent",   "url": "https://egyptindependent.com/feed/",                                   "lang": "en", "country": "Египет"},
+    {"name": "Nairametrics",        "url": "https://nairametrics.com/feed/",                                       "lang": "en", "country": "Нигерия"},
+    {"name": "Saudi Gazette",       "url": "https://saudigazette.com.sa/rssFeed/74",                               "lang": "en", "country": "Саудовская Аравия"},
+    {"name": "Antara",              "url": "https://en.antaranews.com/rss/news.xml",                               "lang": "en", "country": "Индонезия"},
+    {"name": "VnExpress",           "url": "https://e.vnexpress.net/rss/news.rss",                                 "lang": "en", "country": "Вьетнам"},
+    {"name": "New Straits Times",   "url": "https://www.nst.com.my/feed",                                          "lang": "en", "country": "Малайзия"},
+    {"name": "Free Malaysia Today", "url": "https://www.freemalaysiatoday.com/feed/",                              "lang": "en", "country": "Малайзия"},
+    # --- СНГ ---
+    {"name": "Kursiv",              "url": "https://kz.kursiv.media/feed/",                                        "lang": "ru", "country": "Казахстан"},
+    {"name": "Digital Business",    "url": "https://digitalbusiness.kz/feed/",                                     "lang": "ru", "country": "Казахстан"},
+    {"name": "Podrobno.uz",         "url": "https://podrobno.uz/rss/",                                             "lang": "ru", "country": "Узбекистан"},
+    {"name": "24.kg",               "url": "https://24.kg/rss/",                                                   "lang": "ru", "country": "Киргизия"},
+    {"name": "News.am",             "url": "https://news.am/rus/rss/",                                             "lang": "ru", "country": "Армения"},
+    {"name": "Trend",               "url": "https://www.trend.az/feeds/index.rss",                                 "lang": "en", "country": "Азербайджан"},
+    {"name": "БелТА",               "url": "https://www.belta.by/rss",                                             "lang": "ru", "country": "Белоруссия"},
+    {"name": "Onliner",             "url": "https://www.onliner.by/feed",                                          "lang": "ru", "country": "Белоруссия"},
 ]
+
+# Квоты выпуска по странам изданий. Сумма — это и есть размер выпуска.
+QUOTAS = {"ru": 2, "us": 1, "uk": 1, "world": 4}
+# Внутри группы «world» приоритет: БРИКС+ → СНГ → остальные страны.
+BRICS = {"Бразилия", "Индия", "Китай", "Гонконг", "ЮАР", "Египет", "Эфиопия", "Иран", "ОАЭ", "Индонезия", "Саудовская Аравия",
+         "Нигерия", "Турция", "Казахстан", "Узбекистан", "Белоруссия", "Малайзия", "Таиланд", "Вьетнам", "Куба", "Боливия", "Уганда"}
+CIS = {"Казахстан", "Узбекистан", "Белоруссия", "Киргизия", "Таджикистан", "Армения", "Азербайджан", "Туркмения", "Молдавия"}
+GROUP_BONUS = {"БРИКС+": 10, "СНГ": 5, "другие": 0}
+CANDIDATES_PER_REGION = {"ru": 10, "us": 8, "uk": 8, "world": 18}   # сколько кандидатов из каждой группы показать модели
+MAX_ITEMS = sum(QUOTAS.values())
+
+
+def region(feed):
+    return {"Россия": "ru", "США": "us", "Великобритания": "uk"}.get(feed.get("country", ""), "world")
+
+
+def group(country):
+    return "БРИКС+" if country in BRICS else "СНГ" if country in CIS else "другие"
+
+
+REGION_NAME = {"ru": "Россия", "us": "США", "uk": "Великобритания", "world": "остальной мир"}
+
+# Слова-приоритеты: внедрение ИИ (а не просто разговоры о нём) поднимает новость в отборе.
+FOCUS_WORDS = ["внедр", "запуст", "запущен", "пилот", "внедрен", "переход", "стартовал", "начал использ", "начала использ",
+               "применя", "интегрир", "оснаст", "оснащ", "развёрн", "разверн",
+               "implement", "deploy", "rollout", "roll out", "rolled out", "adopt", "launch", "pilot", "introduc",
+               "integrat", "equip", "in use", "put to use", "goes live", "brings ai", "bringing ai"]
 
 # Ключевые слова. Ищутся по началу слова: «робот» найдёт «роботы», «робототехника».
 # Слово с «!» в конце ищется целиком: «ии!» найдёт «ИИ», но не «России».
@@ -310,9 +385,14 @@ def collect(state):
             section = classify(text)
             # Оценка: свежее выше; тематические рубрики выше общей; новость, где ИИ уже в заголовке, — выше
             score = (date - since).total_seconds() / 3600
-            score += 10 if section in ("edu", "gov") else 6 if section in ("biz", "robots") else 0
+            score += 12 if section == "edu" else 8 if section == "gov" else 5 if section in ("biz", "robots") else 0
             score += 5 if has(f" {title} ", CORE_WORDS) else 0
+            score += 8 if has(text, FOCUS_WORDS) else 0          # внедрение — в приоритете
+            grp = group(f.get("country", ""))
+            if region(f) == "world":
+                score += GROUP_BONUS[grp]                            # БРИКС+ и СНГ — выше остальных стран
             items.append({"title": title, "link": link, "summary": summary, "source": f["name"], "lang": f["lang"],
+                          "country": f.get("country", ""), "region": region(f), "group": grp,
                           "section": section, "date": date, "score": score, "img": entry_image(e)})
             seen_titles.add(key)
             kept += 1
@@ -320,24 +400,23 @@ def collect(state):
     return items
 
 
-def select(items, limit=None, per_section=None, per_source=None):
+def select(items, limit=None, per_section=None, per_source=None, quotas=None):
+    """Отбор по очкам с учётом квот по странам, рубрик и источников."""
     limit, per_section, per_source = limit or MAX_ITEMS, per_section or MAX_PER_SECTION, per_source or MAX_PER_SOURCE
+    quotas = quotas or QUOTAS
     items.sort(key=lambda i: -i["score"])
-    chosen, per, per_src = [], {}, {}
+    chosen, per, per_src, per_reg = [], {}, {}, {}
 
     def ok(i):
-        return i not in chosen and per.get(i["section"], 0) < per_section and per_src.get(i["source"], 0) < per_source
+        return (i not in chosen and per.get(i["section"], 0) < per_section and per_src.get(i["source"], 0) < per_source
+                and per_reg.get(i["region"], 0) < quotas.get(i["region"], 0))
 
     def take(i):
         chosen.append(i)
         per[i["section"]] = per.get(i["section"], 0) + 1
         per_src[i["source"]] = per_src.get(i["source"], 0) + 1
+        per_reg[i["region"]] = per_reg.get(i["region"], 0) + 1
 
-    for s in SECTIONS:  # по одной из каждой рубрики для разнообразия
-        for i in items:
-            if i["section"] == s["id"] and ok(i):
-                take(i)
-                break
     for i in items:
         if len(chosen) >= limit:
             break
@@ -348,32 +427,34 @@ def select(items, limit=None, per_section=None, per_source=None):
     return chosen[:limit]
 
 
-def translate(text):
-    """Перевод с английского: Google, при сбое — MyMemory, иначе оригинал."""
-    if not text:
-        return text
-    try:
-        r = requests.get("https://translate.googleapis.com/translate_a/single",
-                         params={"client": "gtx", "sl": "en", "tl": "ru", "dt": "t", "q": text}, headers=UA, timeout=20)
-        if r.ok:
-            out = "".join(p[0] for p in r.json()[0] if p and p[0]).strip()
-            if out:
-                return out
-    except Exception:
-        pass
-    try:
-        params = {"q": text[:500], "langpair": "en|ru"}
-        if os.environ.get("MYMEMORY_EMAIL", "").strip():
-            params["de"] = os.environ["MYMEMORY_EMAIL"].strip()
-        r = requests.get("https://api.mymemory.translated.net/get", params=params, headers=UA, timeout=20)
-        out = r.json().get("responseData", {}).get("translatedText", "")
-        if out and "MYMEMORY WARNING" not in out:
-            return out
-    except Exception:
-        pass
-    log("  перевод не удался, оставляю оригинал")
-    return text
+def candidates(items):
+    """Широкий список кандидатов: по CANDIDATES_PER_REGION лучших из каждой группы стран."""
+    q = CANDIDATES_PER_REGION
+    return select(items, limit=sum(q.values()), per_section=sum(q.values()), per_source=3, quotas=q)
 
+
+def enforce_quotas(picked, pool):
+    """Приводит выбор модели к квотам: лишнее убирает, недостающее добирает из кандидатов по очкам."""
+    out, per_reg, per_src, per_sec = [], {}, {}, {}
+
+    def fits(i):
+        return (per_reg.get(i["region"], 0) < QUOTAS[i["region"]] and per_src.get(i["source"], 0) < MAX_PER_SOURCE
+                and per_sec.get(i["section"], 0) < MAX_PER_SECTION)
+
+    def add(i):
+        out.append(i)
+        per_reg[i["region"]] = per_reg.get(i["region"], 0) + 1
+        per_src[i["source"]] = per_src.get(i["source"], 0) + 1
+        per_sec[i["section"]] = per_sec.get(i["section"], 0) + 1
+
+    for i in picked:
+        if fits(i):
+            add(i)
+    for i in sorted(pool, key=lambda i: -i["score"]):
+        if i not in out and fits(i):
+            add(i)
+            log(f"  добрано по квоте ({i['region']}, {i['country']}): {i['title'][:60]}")
+    return out
 
 
 # ---------- языковая модель ----------
@@ -393,12 +474,12 @@ def llm(system, user, max_tokens=1200):
         r.raise_for_status()
         return "".join(b.get("text", "") for b in r.json()["content"])
     key = os.environ["OPENAI_API_KEY"].strip()
-    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    base = (os.environ.get("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1").rstrip("/")
     headers = {"Authorization": "Bearer " + key, "content-type": "application/json"}
     if os.environ.get("OPENAI_PROJECT", "").strip():      # для YandexGPT сюда передаётся ID каталога
         headers["OpenAI-Project"] = os.environ["OPENAI_PROJECT"].strip()
     r = requests.post(base + "/chat/completions", headers=headers,
-                      json={"model": os.environ.get("LLM_MODEL", "gpt-4o-mini").strip(), "max_tokens": max_tokens,
+                      json={"model": os.environ.get("LLM_MODEL", "").strip() or "gpt-4.1", "max_tokens": max_tokens,
                             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=120)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
@@ -412,20 +493,32 @@ def parse_json(text):
 
 def llm_select(items):
     """Модель выбирает новости в выпуск из списка кандидатов и назначает рубрику."""
-    cands = items[:CANDIDATES]
+    cands = items
     sec_list = "\n".join(f'  "{s["id"]}" — {s["name"]}' for s in SECTIONS)
-    listing = "\n\n".join(f"[{n}] {i['title']}\n{(i.get('text') or i['summary'])[:500]}\n(Источник: {i['source']}, {i['date'].astimezone(MSK):%d.%m %H:%M})"
+    reg_name = REGION_NAME
+    def tag(i):
+        return f"{i['country']}, {i['source']}" + (f", группа {i['group']}" if i["region"] == "world" else "")
+    listing = "\n\n".join(f"[{n}] ({reg_name[i['region']]}: {tag(i)}) {i['title']}\n{(i.get('text') or i['summary'])[:500]}"
                           for n, i in enumerate(cands, 1))
     system = ("Ты выпускающий редактор. " + CHANNEL_ABOUT + " Отвечай только JSON без пояснений.")
-    user = (f"Ниже {len(cands)} новостей-кандидатов. Выбери не больше {MAX_ITEMS} самых значимых для аудитории канала.\n"
-            "Правила отбора:\n"
-            "1. Берём только новости, где ИИ или роботы — суть события, а не упоминание вскользь.\n"
-            "2. Приоритет: внедрение ИИ и роботов в образование любого уровня, в госуправление (любые страны), в управление компаниями; "
-            "государственные программы и субсидии; новые методы обучения людей и роботов; заметные сдвиги в развитии ИИ.\n"
-            "3. Не брать: рекламу курсов и продуктов, релизы гаджетов, военные новости, слухи, мелкие корпоративные пресс-релизы без общественного значения, "
-            "инструкции и туториалы для программистов.\n"
-            f"4. Не больше {MAX_PER_SECTION} новостей в одной рубрике, не больше {MAX_PER_SOURCE} от одного источника, без дублей одной темы.\n"
-            f"5. Каждой выбранной новости назначь рубрику из списка:\n{sec_list}\n\n"
+    quota_text = ", ".join(f"{reg_name[r]} — {n}" for r, n in QUOTAS.items())
+    user = (f"Ниже {len(cands)} новостей-кандидатов, у каждой указана страна издания. Собери выпуск ровно из {MAX_ITEMS} новостей.\n"
+            f"Жёсткие квоты по стране ИЗДАНИЯ (не по стране события): {quota_text}. Квоты обязательны.\n"
+            "Внутри группы «остальной мир» приоритет стран: сначала БРИКС+ (Китай, Индия, Бразилия, ЮАР, Египет, ОАЭ, Иран, Индонезия, "
+            "Саудовская Аравия, Турция, Нигерия и др.), затем СНГ (Казахстан, Узбекистан, Белоруссия, Киргизия, Армения, Азербайджан и др.), "
+            "затем все прочие страны. При равной значимости новости бери из более приоритетной группы.\n"
+            "Приоритеты отбора (по убыванию):\n"
+            "1. Внедрение ИИ в образование: конкретные школы, колледжи, вузы, ведомства, компании, которые запустили ИИ-инструменты "
+            "в обучении, новые учебные программы и методы с ИИ, результаты и оценки таких внедрений.\n"
+            "2. Внедрение ИИ в госуправление и в управление компаниями: запущенные системы, госпрограммы, субсидии, регулирование с "
+            "практическими последствиями.\n"
+            "3. Обучение роботов и роботы в образовании.\n"
+            "4. Значимые сдвиги в развитии ИИ и его влиянии на общество.\n"
+            "Конкретное внедрение ценнее общих рассуждений, исследований мнений и прогнозов.\n"
+            "Не брать: рекламу курсов и продуктов, релизы гаджетов, военные новости, слухи, мелкие пресс-релизы без общественного значения, "
+            "инструкции для программистов.\n"
+            f"Не больше {MAX_PER_SECTION} новостей в одной рубрике, не больше {MAX_PER_SOURCE} от одного источника, без дублей одной темы.\n"
+            f"Каждой выбранной новости назначь рубрику из списка:\n{sec_list}\n\n"
             'Формат ответа: {"picks": [{"n": номер, "section": "id рубрики", "why": "3-6 слов"}]}\n\n' + listing)
     try:
         data = parse_json(llm(system, user, 800))
@@ -437,8 +530,8 @@ def llm_select(items):
                 if p.get("section") in {s["id"] for s in SECTIONS}:
                     i["section"] = p["section"]
                 out.append(i)
-                log(f"  выбрано: {i['title'][:60]} — {p.get('why', '')}")
-        return out[:MAX_ITEMS]
+                log(f"  выбрано ({i['region']}, {i['country']}, {i['source']}): {i['title'][:60]} — {p.get('why', '')}")
+        return enforce_quotas(out, cands)
     except Exception as ex:
         log(f"  отбор моделью не удался ({ex}), отбираю по ключевым словам")
         return []
@@ -535,7 +628,7 @@ def build_posts(chosen):
         i["done"] = True
         s = sec[i["section"]]
         link = html.escape(i["link"])
-        tail = f"\n\n<i>Источник: <a href=\"{link}\">{html.escape(i['source'])}</a></i>"
+        tail = f"\n\n<i>Источник: <a href=\"{link}\">{html.escape(i['source'])}</a> ({html.escape(i['country'])})</i>"
         text = f"{s['emoji']} <b>{html.escape(title)}</b>\n\n"
         room = 4000 - len(text) - len(tail)
         text += html.escape(clean(body, room) if len(body) > room else body) + tail
@@ -597,10 +690,10 @@ def main():
     chosen = []
     if llm_available():
         prov = "Claude " + (os.environ.get("LLM_MODEL", "").strip() or CLAUDE_MODEL) if os.environ.get("ANTHROPIC_API_KEY", "").strip() \
-            else "OpenAI-совместимый " + os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
+            else "OpenAI-совместимый " + (os.environ.get("LLM_MODEL", "").strip() or "gpt-4.1")
         log(f"Модель: {prov}")
         # Грубый отбор по ключевым словам, чтение полных текстов, затем модель выбирает лучшее из прочитанного
-        wide = select(items, limit=CANDIDATES, per_section=CANDIDATES, per_source=4)
+        wide = candidates(items)
         wide = read_articles(wide)
         chosen = llm_select(wide)
     else:
