@@ -26,6 +26,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_PROJECT: ${{ secrets.OPENAI_PROJECT }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
           MYMEMORY_EMAIL: ${{ secrets.MYMEMORY_EMAIL }}
         run: python digest.py
 
@@ -34,5 +39,7 @@ jobs:
           git config user.name "digest-bot"
           git config user.email "digest-bot@users.noreply.github.com"
           git add posted.json
+          git diff --cached --quiet || git commit -m "Обновлён список опубликованных новостей"
+          git push
           git diff --cached --quiet || git commit -m "Обновлён список опубликованных новостей"
           git push
