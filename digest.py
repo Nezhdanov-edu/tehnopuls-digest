@@ -11,11 +11,16 @@
 Новости без ИИ или роботов не берутся вообще.
 
 Формат публикации: шапка выпуска, затем каждая новость отдельным постом с картинкой.
+Каждая новость — самостоятельная заметка: робот открывает полный текст статьи, и языковая модель
+пишет по нему краткий аналитический пересказ на русском. Модель же отбирает новости в выпуск.
 
 Настройки (переменные окружения):
   TELEGRAM_BOT_TOKEN — ключ бота от @BotFather
   TELEGRAM_CHAT_ID   — адрес канала, например @tehnopuls_edu, или его числовой id
-Если ключ не задан, робот печатает дайджест на экран (режим проверки).
+  ANTHROPIC_API_KEY  — ключ Claude (Anthropic) для написания заметок
+     либо OPENAI_API_KEY + OPENAI_BASE_URL + LLM_MODEL (+ OPENAI_PROJECT для YandexGPT) — любой OpenAI-совместимый сервис
+Без ключа модели робот работает по-старому: машинный перевод и обрывок из RSS.
+Без ключа бота робот печатает выпуск на экран (режим проверки).
 """
 
 import json, os, re, sys, time, html, io
@@ -31,7 +36,17 @@ MAX_PER_SECTION = 3      # сколько максимум в одной руб�
 MAX_PER_SOURCE = 2       # не больше N новостей от одного издания
 LOOKBACK_HOURS = 30      # брать новости не старше N часов
 CHANNEL_TITLE = "Технопульс · Образование"
-SUMMARY_LEN = 260        # длина описания под картинкой, знаков
+SUMMARY_LEN = 260        # длина описания из RSS (используется при отборе и как запасной вариант)
+CANDIDATES = 28          # сколько лучших по ключевым словам новостей показать модели для отбора
+BODY_MIN, BODY_MAX = 450, 700   # длина заметки, знаков (подпись к фото в Телеграме — не больше 1024)
+CLAUDE_MODEL = "claude-sonnet-4-6"      # модель Claude по умолчанию
+ARTICLE_CHARS = 7000     # сколько знаков статьи отдавать модели
+
+CHANNEL_ABOUT = ("Телеграм-канал о том, как искусственный интеллект и робототехника меняют образование всех уровней "
+                 "(школа, СПО, вузы, корпоративное обучение, обучение взрослых), государственное управление "
+                 "(города, регионы, страны, госпрограммы и субсидии), управление компаниями и общество в целом, "
+                 "а также об обучении роботов и развитии ИИ. Аудитория — руководители образовательных организаций, "
+                 "чиновники, преподаватели, HR и руководители компаний в России.")
 
 # Ленты. lang: ru/en. Все ленты фильтруются одинаково: нужна связь с ИИ или роботами.
 FEEDS = [
@@ -168,7 +183,8 @@ def has(text, words):
 
 def clean(html_text, limit=300):
     t = re.sub(r"<[^>]+>", " ", html_text or "")
-    t = html.unescape(re.sub(r"\s+", " ", t)).strip()
+    t = html.unescape(re.sub(r"[ \t\r]+", " ", t)).strip()
+    t = re.sub(r"\n\s*\n+", "\n\n", t)
     if len(t) > limit:
         t = t[:limit].rsplit(" ", 1)[0].rstrip(",;:—-") + "…"
     return t
@@ -303,12 +319,13 @@ def collect(state):
     return items
 
 
-def select(items):
+def select(items, limit=None, per_section=None, per_source=None):
+    limit, per_section, per_source = limit or MAX_ITEMS, per_section or MAX_PER_SECTION, per_source or MAX_PER_SOURCE
     items.sort(key=lambda i: -i["score"])
     chosen, per, per_src = [], {}, {}
 
     def ok(i):
-        return i not in chosen and per.get(i["section"], 0) < MAX_PER_SECTION and per_src.get(i["source"], 0) < MAX_PER_SOURCE
+        return i not in chosen and per.get(i["section"], 0) < per_section and per_src.get(i["source"], 0) < per_source
 
     def take(i):
         chosen.append(i)
@@ -321,13 +338,13 @@ def select(items):
                 take(i)
                 break
     for i in items:
-        if len(chosen) >= MAX_ITEMS:
+        if len(chosen) >= limit:
             break
         if ok(i):
             take(i)
     order = {s["id"]: n for n, s in enumerate(SECTIONS)}
     chosen.sort(key=lambda i: (order[i["section"]], -i["score"]))
-    return chosen[:MAX_ITEMS]
+    return chosen[:limit]
 
 
 def translate(text):
@@ -357,6 +374,117 @@ def translate(text):
     return text
 
 
+
+# ---------- языковая модель ----------
+
+def llm_available():
+    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip())
+
+
+def llm(system, user, max_tokens=1200):
+    """Один запрос к модели. Claude, если задан ANTHROPIC_API_KEY, иначе OpenAI-совместимый сервис."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if key:
+        r = requests.post("https://api.anthropic.com/v1/messages",
+                          headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json={"model": os.environ.get("LLM_MODEL", "").strip() or CLAUDE_MODEL, "max_tokens": max_tokens,
+                                "system": system, "messages": [{"role": "user", "content": user}]}, timeout=120)
+        r.raise_for_status()
+        return "".join(b.get("text", "") for b in r.json()["content"])
+    key = os.environ["OPENAI_API_KEY"].strip()
+    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    headers = {"Authorization": "Bearer " + key, "content-type": "application/json"}
+    if os.environ.get("OPENAI_PROJECT", "").strip():      # для YandexGPT сюда передаётся ID каталога
+        headers["OpenAI-Project"] = os.environ["OPENAI_PROJECT"].strip()
+    r = requests.post(base + "/chat/completions", headers=headers,
+                      json={"model": os.environ.get("LLM_MODEL", "gpt-4o-mini").strip(), "max_tokens": max_tokens,
+                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=120)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def parse_json(text):
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    m = re.search(r"\{.*\}", text, re.S)
+    return json.loads(m.group(0) if m else text)
+
+
+def llm_select(items):
+    """Модель выбирает новости в выпуск из списка кандидатов и назначает рубрику."""
+    cands = items[:CANDIDATES]
+    sec_list = "\n".join(f'  "{s["id"]}" — {s["name"]}' for s in SECTIONS)
+    listing = "\n\n".join(f"[{n}] {i['title']}\n{i['summary']}\n(Источник: {i['source']}, {i['date'].astimezone(MSK):%d.%m %H:%M})"
+                          for n, i in enumerate(cands, 1))
+    system = ("Ты выпускающий редактор. " + CHANNEL_ABOUT + " Отвечай только JSON без пояснений.")
+    user = (f"Ниже {len(cands)} новостей-кандидатов. Выбери не больше {MAX_ITEMS} самых значимых для аудитории канала.\n"
+            "Правила отбора:\n"
+            "1. Берём только новости, где ИИ или роботы — суть события, а не упоминание вскользь.\n"
+            "2. Приоритет: внедрение ИИ и роботов в образование любого уровня, в госуправление (любые страны), в управление компаниями; "
+            "государственные программы и субсидии; новые методы обучения людей и роботов; заметные сдвиги в развитии ИИ.\n"
+            "3. Не брать: рекламу курсов и продуктов, релизы гаджетов, военные новости, слухи, мелкие корпоративные пресс-релизы без общественного значения, "
+            "инструкции и туториалы для программистов.\n"
+            f"4. Не больше {MAX_PER_SECTION} новостей в одной рубрике, не больше {MAX_PER_SOURCE} от одного источника, без дублей одной темы.\n"
+            f"5. Каждой выбранной новости назначь рубрику из списка:\n{sec_list}\n\n"
+            'Формат ответа: {"picks": [{"n": номер, "section": "id рубрики", "why": "3-6 слов"}]}\n\n' + listing)
+    try:
+        data = parse_json(llm(system, user, 800))
+        out = []
+        for p in data.get("picks", []):
+            n = int(p["n"]) - 1
+            if 0 <= n < len(cands) and cands[n] not in out:
+                i = cands[n]
+                if p.get("section") in {s["id"] for s in SECTIONS}:
+                    i["section"] = p["section"]
+                out.append(i)
+                log(f"  выбрано: {i['title'][:60]} — {p.get('why', '')}")
+        return out[:MAX_ITEMS]
+    except Exception as ex:
+        log(f"  отбор моделью не удался ({ex}), отбираю по ключевым словам")
+        return []
+
+
+def article_text(link):
+    """Полный текст статьи со страницы."""
+    try:
+        import trafilatura
+        r = requests.get(link, headers=UA, timeout=20)
+        t = trafilatura.extract(r.text, include_comments=False, include_tables=False) or ""
+        return t[:ARTICLE_CHARS]
+    except Exception as ex:
+        log(f"  текст статьи не получен ({ex})")
+        return ""
+
+
+def llm_write(item):
+    """Модель пишет самостоятельную заметку по полному тексту статьи. Возвращает (заголовок, текст) или None."""
+    body_src = article_text(item["link"]) or item["summary"]
+    if len(body_src) < 200:
+        body_src = item["title"] + "\n" + item["summary"]
+    system = ("Ты журналист и редактор. " + CHANNEL_ABOUT +
+              " Пишешь по-русски: ясно, точно, без канцелярита, без рекламных интонаций и без англицизмов там, где есть русское слово. "
+              "Стиль — деловая аналитическая заметка, как в хорошем отраслевом издании. Отвечай только JSON без пояснений.")
+    user = (f"Напиши самостоятельную заметку для канала по материалу ниже. Заметка должна быть понятна без перехода по ссылке.\n"
+            "Требования:\n"
+            "- заголовок: до 80 знаков, информативный, по-русски, без кликбейта и без точки в конце;\n"
+            f"- текст: {BODY_MIN}–{BODY_MAX} знаков, 2–3 абзаца, разделённых пустой строкой. Первый абзац — что произошло: кто, что, где, "
+            "цифры и названия из материала. Второй — почему это важно и что это меняет для образования, госуправления или бизнеса; "
+            "контекст, если он есть в материале. Третий (если нужен) — что дальше, ограничения, спорные моменты;\n"
+            "- только факты из материала, ничего не додумывать; если материал на английском — не переводить дословно, а пересказать "
+            "как русский журналист: имена и названия передавать по устоявшейся практике (Google, OpenAI, Microsoft остаются латиницей);\n"
+            "- без фраз «читайте по ссылке», «подробнее на сайте», без обращения к читателю, без эмодзи, без markdown.\n"
+            'Формат ответа: {"title": "...", "body": "..."}\n\n'
+            f"Источник: {item['source']}\nЗаголовок оригинала: {item['title']}\n\nМатериал:\n{body_src}")
+    try:
+        data = parse_json(llm(system, user, 1500))
+        title, body = data["title"].strip().rstrip("."), data["body"].strip()
+        if len(title) < 10 or len(body) < 200:
+            raise ValueError("слишком короткий ответ")
+        return title, body
+    except Exception as ex:
+        log(f"  заметка не написана ({ex}), беру запасной вариант")
+        return None
+
+
 def build_posts(chosen):
     """Возвращает список постов: первый — шапка (текст), остальные — новости (текст + картинка)."""
     now = datetime.now(MSK)
@@ -371,17 +499,20 @@ def build_posts(chosen):
     posts = [{"text": head, "photo": None}]
 
     for i in chosen:
-        title, summary = i["title"], i["summary"]
-        if i["lang"] == "en":
-            title = translate(title)
-            summary = translate(summary)
+        written = llm_write(i) if llm_available() else None
+        if written:
+            title, body = written
+        else:
+            title, body = i["title"], i["summary"]
+            if i["lang"] == "en":
+                title, body = translate(title), translate(body)
         s = sec[i["section"]]
         link = html.escape(i["link"])
         caption = f"{s['emoji']} <b>{html.escape(title)}</b>\n\n"
-        tail = f"\n<a href=\"{link}\">Читать в источнике</a> — {html.escape(i['source'])}"
-        room = 1000 - len(caption) - len(tail)
-        if summary and room > 60:
-            caption += html.escape(clean(summary, room)) + "\n"
+        tail = f"\n<i>Источник: <a href=\"{link}\">{html.escape(i['source'])}</a></i>"
+        room = 1024 - len(caption) - len(tail) - 8
+        if body:
+            caption += html.escape(clean(body, room) if len(body) > room else body) + "\n"
         caption += tail
         # Картинка: из ленты, иначе со страницы статьи
         photo = download_image(i["img"]) or download_image(page_image(i["link"]))
@@ -433,10 +564,18 @@ def main():
     state = load_state()
     items = collect(state)
     log(f"\nВсего подходящих новостей: {len(items)}")
-    chosen = select(items)
+    chosen = []
+    if llm_available():
+        # Сначала грубый отбор по ключевым словам (широкий), потом модель выбирает лучшее
+        wide = select(items, limit=CANDIDATES, per_section=CANDIDATES, per_source=4)
+        chosen = llm_select(wide)
+    if not chosen:
+        chosen = select(items)
     if not chosen:
         log("Нечего публиковать.")
         return
+    order = {s["id"]: n for n, s in enumerate(SECTIONS)}
+    chosen.sort(key=lambda i: order[i["section"]])
     posts = build_posts(chosen)
     if send(posts):
         state["posted"].extend(i["link"] for i in chosen)
