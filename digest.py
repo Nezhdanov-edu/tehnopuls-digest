@@ -10,9 +10,9 @@
   🌍 развитие ИИ и его влияние на общество
 Новости без ИИ или роботов не берутся вообще.
 
-Формат публикации: шапка выпуска, затем каждая новость отдельным постом с картинкой.
-Каждая новость — самостоятельная заметка: робот открывает полный текст статьи, и языковая модель
-пишет по нему краткий аналитический пересказ на русском. Модель же отбирает новости в выпуск.
+Формат публикации: шапка выпуска, затем каждая новость отдельным постом: картинка сверху, под ней
+самостоятельная заметка на 1200–2000 знаков. Робот сначала читает полные тексты статей-кандидатов,
+затем языковая модель отбирает лучшие и пишет по каждой краткий аналитический пересказ на русском.
 
 Настройки (переменные окружения):
   TELEGRAM_BOT_TOKEN — ключ бота от @BotFather
@@ -38,7 +38,8 @@ LOOKBACK_HOURS = 30      # брать новости не старше N час�
 CHANNEL_TITLE = "Технопульс · Образование"
 SUMMARY_LEN = 260        # длина описания из RSS (используется при отборе и как запасной вариант)
 CANDIDATES = 28          # сколько лучших по ключевым словам новостей показать модели для отбора
-BODY_MIN, BODY_MAX = 450, 700   # длина заметки, знаков (подпись к фото в Телеграме — не больше 1024)
+BODY_MIN, BODY_MAX = 1200, 2000 # длина заметки, знаков (пост в Телеграме — до 4096)
+MIN_ARTICLE = 600        # если со страницы не удалось прочитать хотя бы столько знаков, новость не берётся
 CLAUDE_MODEL = "claude-sonnet-4-6"      # модель Claude по умолчанию
 ARTICLE_CHARS = 7000     # сколько знаков статьи отдавать модели
 
@@ -413,7 +414,7 @@ def llm_select(items):
     """Модель выбирает новости в выпуск из списка кандидатов и назначает рубрику."""
     cands = items[:CANDIDATES]
     sec_list = "\n".join(f'  "{s["id"]}" — {s["name"]}' for s in SECTIONS)
-    listing = "\n\n".join(f"[{n}] {i['title']}\n{i['summary']}\n(Источник: {i['source']}, {i['date'].astimezone(MSK):%d.%m %H:%M})"
+    listing = "\n\n".join(f"[{n}] {i['title']}\n{(i.get('text') or i['summary'])[:500]}\n(Источник: {i['source']}, {i['date'].astimezone(MSK):%d.%m %H:%M})"
                           for n, i in enumerate(cands, 1))
     system = ("Ты выпускающий редактор. " + CHANNEL_ABOUT + " Отвечай только JSON без пояснений.")
     user = (f"Ниже {len(cands)} новостей-кандидатов. Выбери не больше {MAX_ITEMS} самых значимых для аудитории канала.\n"
@@ -456,33 +457,54 @@ def article_text(link):
 
 
 def llm_write(item):
-    """Модель пишет самостоятельную заметку по полному тексту статьи. Возвращает (заголовок, текст) или None."""
-    body_src = article_text(item["link"]) or item["summary"]
-    if len(body_src) < 200:
-        body_src = item["title"] + "\n" + item["summary"]
+    """Модель пишет самостоятельную статью по полному тексту материала. Возвращает (заголовок, текст) или None."""
+    body_src = item.get("text") or ""
+    if len(body_src) < MIN_ARTICLE:
+        log("  текста статьи нет, пропускаю")
+        return None
     system = ("Ты журналист и редактор. " + CHANNEL_ABOUT +
-              " Пишешь по-русски: ясно, точно, без канцелярита, без рекламных интонаций и без англицизмов там, где есть русское слово. "
-              "Стиль — деловая аналитическая заметка, как в хорошем отраслевом издании. Отвечай только JSON без пояснений.")
-    user = (f"Напиши самостоятельную заметку для канала по материалу ниже. Заметка должна быть понятна без перехода по ссылке.\n"
+              " Пишешь по-русски: ясно, точно, живым деловым языком, без канцелярита, без рекламных интонаций и без англицизмов там, "
+              "где есть русское слово. Стиль — аналитическая заметка хорошего отраслевого издания, которую читают целиком в Телеграме. "
+              "Отвечай только JSON без пояснений.")
+    user = (f"Напиши по материалу ниже самостоятельную краткую статью для канала. Читатель должен полностью понять суть, "
+            "не открывая первоисточник.\n"
             "Требования:\n"
             "- заголовок: до 80 знаков, информативный, по-русски, без кликбейта и без точки в конце;\n"
-            f"- текст: {BODY_MIN}–{BODY_MAX} знаков, 2–3 абзаца, разделённых пустой строкой. Первый абзац — что произошло: кто, что, где, "
-            "цифры и названия из материала. Второй — почему это важно и что это меняет для образования, госуправления или бизнеса; "
-            "контекст, если он есть в материале. Третий (если нужен) — что дальше, ограничения, спорные моменты;\n"
-            "- только факты из материала, ничего не додумывать; если материал на английском — не переводить дословно, а пересказать "
-            "как русский журналист: имена и названия передавать по устоявшейся практике (Google, OpenAI, Microsoft остаются латиницей);\n"
-            "- без фраз «читайте по ссылке», «подробнее на сайте», без обращения к читателю, без эмодзи, без markdown.\n"
+            f"- текст: {BODY_MIN}–{BODY_MAX} знаков, 4–6 абзацев, разделённых пустой строкой, без подзаголовков и списков.\n"
+            "  1) Лид: суть события в двух-трёх предложениях — кто, что, где, когда.\n"
+            "  2) Подробности: конкретика из материала — цифры, названия, механика решения, сроки, участники, цитаты (в пересказе).\n"
+            "  3) Контекст и значение: почему это важно, что это меняет для образования, госуправления или бизнеса, "
+            "как соотносится с тем, что уже известно из материала.\n"
+            "  4) Что дальше: планы, ограничения, риски, спорные моменты — только если они есть в материале;\n"
+            "- только факты из материала, ничего не додумывать и не добавлять извне; если чего-то в материале нет — не писать об этом;\n"
+            "- если материал на английском — не переводить дословно, а пересказать как русский журналист: имена и названия передавать "
+            "по устоявшейся практике (Google, OpenAI, Microsoft остаются латиницей, должности и организации — по-русски);\n"
+            "- без фраз «читайте по ссылке», «подробнее на сайте», «в статье говорится», без обращения к читателю, без эмодзи, без markdown.\n"
             'Формат ответа: {"title": "...", "body": "..."}\n\n'
             f"Источник: {item['source']}\nЗаголовок оригинала: {item['title']}\n\nМатериал:\n{body_src}")
     try:
-        data = parse_json(llm(system, user, 1500))
+        data = parse_json(llm(system, user, 2500))
         title, body = data["title"].strip().rstrip("."), data["body"].strip()
-        if len(title) < 10 or len(body) < 200:
+        if len(title) < 10 or len(body) < 500:
             raise ValueError("слишком короткий ответ")
         return title, body
     except Exception as ex:
-        log(f"  заметка не написана ({ex}), беру запасной вариант")
+        log(f"  заметка не написана ({ex})")
         return None
+
+
+def read_articles(items):
+    """Читает полные тексты статей у кандидатов (параллельно) и оставляет только те, где текст удалось получить."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as ex:
+        texts = list(ex.map(lambda i: article_text(i["link"]), items))
+    ok = []
+    for i, t in zip(items, texts):
+        if len(t) >= MIN_ARTICLE:
+            i["text"] = t
+            ok.append(i)
+    log(f"Прочитано полных текстов: {len(ok)} из {len(items)}")
+    return ok
 
 
 def build_posts(chosen):
@@ -496,29 +518,44 @@ def build_posts(chosen):
         counts[i["section"]] = counts.get(i["section"], 0) + 1
     head = f"<b>{html.escape(CHANNEL_TITLE)}</b>\n{when} выпуск, {now.day} {months[now.month - 1]} — {len(chosen)} {plural(len(chosen))}\n\n"
     head += "\n".join(f"{sec[k]['emoji']} {sec[k]['name']} — {counts[k]}" for k in [s["id"] for s in SECTIONS] if k in counts)
-    posts = [{"text": head, "photo": None}]
+    posts = [{"text": head, "image": None}]
 
+    written_n = 0
     for i in chosen:
         written = llm_write(i) if llm_available() else None
         if written:
             title, body = written
+            written_n += 1
         else:
+            if llm_available():
+                continue  # без нормальной заметки новость в выпуск не идёт
             title, body = i["title"], i["summary"]
             if i["lang"] == "en":
                 title, body = translate(title), translate(body)
+        i["done"] = True
         s = sec[i["section"]]
         link = html.escape(i["link"])
-        caption = f"{s['emoji']} <b>{html.escape(title)}</b>\n\n"
-        tail = f"\n<i>Источник: <a href=\"{link}\">{html.escape(i['source'])}</a></i>"
-        room = 1024 - len(caption) - len(tail) - 8
-        if body:
-            caption += html.escape(clean(body, room) if len(body) > room else body) + "\n"
-        caption += tail
-        # Картинка: из ленты, иначе со страницы статьи
-        photo = download_image(i["img"]) or download_image(page_image(i["link"]))
-        if not photo:
+        tail = f"\n\n<i>Источник: <a href=\"{link}\">{html.escape(i['source'])}</a></i>"
+        text = f"{s['emoji']} <b>{html.escape(title)}</b>\n\n"
+        room = 4000 - len(text) - len(tail)
+        text += html.escape(clean(body, room) if len(body) > room else body) + tail
+        # Картинка: из ленты, иначе со страницы статьи. Проверяем, что она скачивается и это нормальное фото.
+        img_url = i["img"] if download_image(i["img"]) else ""
+        if not img_url:
+            og = page_image(i["link"])
+            img_url = og if download_image(og) else ""
+        if not img_url:
             log(f"  без картинки: {i['title'][:60]}")
-        posts.append({"text": caption, "photo": photo, "link": i["link"]})
+        posts.append({"text": text, "image": img_url, "link": i["link"]})
+    log(f"Заметок написано моделью: {written_n} из {len(chosen)}")
+    chosen[:] = [i for i in chosen if i.get("done")]
+    # Пересобираем шапку по фактическому составу выпуска
+    counts = {}
+    for i in chosen:
+        counts[i["section"]] = counts.get(i["section"], 0) + 1
+    head = f"<b>{html.escape(CHANNEL_TITLE)}</b>\n{when} выпуск, {now.day} {months[now.month - 1]} — {len(chosen)} {plural(len(chosen))}\n\n"
+    head += "\n".join(f"{sec[k]['emoji']} {sec[k]['name']} — {counts[k]}" for k in [s["id"] for s in SECTIONS] if k in counts)
+    posts[0]["text"] = head
     return posts
 
 
@@ -536,26 +573,19 @@ def send(posts):
     if not token or not chat:
         log("Ключ бота или адрес канала не заданы — режим проверки, печатаю выпуск:\n")
         for p in posts:
-            print(("[ФОТО] " if p.get("photo") else "[без фото] ") + p["text"] + "\n\n-----\n")
+            print(("[ФОТО] " if p.get("image") else "[без фото] ") + p["text"] + "\n\n-----\n")
         return False
     api = f"https://api.telegram.org/bot{token}/"
     for p in posts:
-        if p.get("photo"):
-            r = requests.post(api + "sendPhoto", data={"chat_id": chat, "caption": p["text"], "parse_mode": "HTML"},
-                              files={"photo": ("news.jpg", p["photo"], "image/jpeg")}, timeout=60)
-            if not r.ok:
-                log("  sendPhoto не прошёл, отправляю текстом:", r.text[:200])
-        if not p.get("photo") or not r.ok:
-            opts = {"is_disabled": False, "prefer_large_media": True, "show_above_text": True}
-            if p.get("link"):
-                opts["url"] = p["link"]
-            else:
-                opts = {"is_disabled": True}
-            r = requests.post(api + "sendMessage", json={"chat_id": chat, "text": p["text"], "parse_mode": "HTML",
-                                                         "link_preview_options": opts}, timeout=30)
-            if not r.ok:
-                log("Телеграм ответил ошибкой:", r.text)
-                r.raise_for_status()
+        if p.get("image"):
+            opts = {"is_disabled": False, "url": p["image"], "prefer_large_media": True, "show_above_text": True}
+        else:
+            opts = {"is_disabled": True}
+        r = requests.post(api + "sendMessage", json={"chat_id": chat, "text": p["text"], "parse_mode": "HTML",
+                                                     "link_preview_options": opts}, timeout=30)
+        if not r.ok:
+            log("Телеграм ответил ошибкой:", r.text)
+            r.raise_for_status()
         time.sleep(3)  # чтобы не упереться в лимит Телеграма на частоту постов
     return True
 
@@ -566,9 +596,15 @@ def main():
     log(f"\nВсего подходящих новостей: {len(items)}")
     chosen = []
     if llm_available():
-        # Сначала грубый отбор по ключевым словам (широкий), потом модель выбирает лучшее
+        prov = "Claude " + (os.environ.get("LLM_MODEL", "").strip() or CLAUDE_MODEL) if os.environ.get("ANTHROPIC_API_KEY", "").strip() \
+            else "OpenAI-совместимый " + os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
+        log(f"Модель: {prov}")
+        # Грубый отбор по ключевым словам, чтение полных текстов, затем модель выбирает лучшее из прочитанного
         wide = select(items, limit=CANDIDATES, per_section=CANDIDATES, per_source=4)
+        wide = read_articles(wide)
         chosen = llm_select(wide)
+    else:
+        log("Ключ модели не задан — работаю в упрощённом режиме (машинный перевод, обрывки RSS)")
     if not chosen:
         chosen = select(items)
     if not chosen:
