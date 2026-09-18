@@ -470,19 +470,29 @@ def llm(system, user, max_tokens=1200):
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                           json={"model": os.environ.get("LLM_MODEL", "").strip() or CLAUDE_MODEL, "max_tokens": max_tokens,
-                                "system": system, "messages": [{"role": "user", "content": user}]}, timeout=120)
-        r.raise_for_status()
+                                "system": system, "messages": [{"role": "user", "content": user}]}, timeout=180)
+        if not r.ok:
+            raise RuntimeError(f"{r.status_code}: {r.text[:300]}")
         return "".join(b.get("text", "") for b in r.json()["content"])
     key = os.environ["OPENAI_API_KEY"].strip()
     base = (os.environ.get("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1").rstrip("/")
     headers = {"Authorization": "Bearer " + key, "content-type": "application/json"}
     if os.environ.get("OPENAI_PROJECT", "").strip():      # для YandexGPT сюда передаётся ID каталога
         headers["OpenAI-Project"] = os.environ["OPENAI_PROJECT"].strip()
-    r = requests.post(base + "/chat/completions", headers=headers,
-                      json={"model": os.environ.get("LLM_MODEL", "").strip() or "gpt-4.1", "max_tokens": max_tokens,
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=120)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    model = os.environ.get("LLM_MODEL", "").strip() or "gpt-4.1"
+    body = {"model": model, "max_completion_tokens": max_tokens + 6000, "reasoning_effort": "low",
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    r = requests.post(base + "/chat/completions", headers=headers, json=body, timeout=240)
+    if r.status_code == 400 and "reasoning" in r.text:               # модель без режима размышлений (gpt-4.1 и т.п.)
+        body.pop("reasoning_effort", None)
+        r = requests.post(base + "/chat/completions", headers=headers, json=body, timeout=240)
+    if r.status_code == 400 and "max_completion_tokens" in r.text:   # старые OpenAI-совместимые сервисы знают только max_tokens
+        body["max_tokens"] = body.pop("max_completion_tokens")
+        body.pop("reasoning_effort", None)
+        r = requests.post(base + "/chat/completions", headers=headers, json=body, timeout=240)
+    if not r.ok:
+        raise RuntimeError(f"{r.status_code}: {r.text[:300]}")
+    return r.json()["choices"][0]["message"]["content"] or ""
 
 
 def parse_json(text):
