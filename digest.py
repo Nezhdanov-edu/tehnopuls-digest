@@ -327,6 +327,37 @@ def download_image(url):
         return None
 
 
+def is_day_off(day=None):
+    """Выходной или праздничный день в России (по производственному календарю, с переносами).
+    Источник: isdayoff.ru, запасной — xmlcalendar.ru, затем — фиксированный список праздников.
+    Дополнительные нерабочие дни можно вписать в файл holidays.txt (по одной дате ГГГГ-ММ-ДД в строке)."""
+    day = day or datetime.now(MSK).date()
+    try:
+        extra = {l.strip() for l in open("holidays.txt", encoding="utf-8") if l.strip() and not l.startswith("#")}
+        if day.isoformat() in extra:
+            return True
+    except Exception:
+        pass
+    if day.weekday() >= 5:
+        return True
+    try:
+        r = requests.get(f"https://isdayoff.ru/{day:%Y%m%d}", headers=UA, timeout=15)
+        if r.ok and r.text.strip() in ("0", "1", "2"):
+            return r.text.strip() == "1"
+    except Exception:
+        pass
+    try:
+        r = requests.get(f"https://xmlcalendar.ru/data/ru/{day.year}/calendar.json", headers=UA, timeout=15)
+        for m in r.json()["months"]:
+            if m["month"] == day.month:
+                days = {int(re.sub(r"\D", "", d)) for d in m["days"].split(",") if not d.endswith("*")}
+                return day.day in days
+    except Exception:
+        pass
+    fixed = {(1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7), (1, 8), (2, 23), (3, 8), (5, 1), (5, 9), (6, 12), (11, 4)}
+    return (day.month, day.day) in fixed
+
+
 def load_state():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
@@ -694,6 +725,9 @@ def send(posts):
 
 
 def main():
+    if is_day_off() and not os.environ.get("FORCE_RUN", "").strip():
+        log("Сегодня в России выходной или праздник — выпуск не публикуется.")
+        return
     state = load_state()
     items = collect(state)
     log(f"\nВсего подходящих новостей: {len(items)}")
