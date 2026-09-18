@@ -5,6 +5,7 @@ on:
     # Время в UTC. 06:00 и 15:00 UTC = 09:00 и 18:00 по Москве.
     # Публикации только по будням; праздники робот проверяет сам по производственному календарю.
     - cron: "0 6 * * 1-5"      # утренний новостной выпуск, понедельник–пятница
+    - cron: "0 6 * * 0,6"      # выходные: только поздравление с праздником, если он сегодня
     - cron: "0 15 * * 1-4"     # вечерний новостной выпуск, понедельник–четверг
     - cron: "0 15 * * 5"       # пятница вечером: только афиша недели
   workflow_dispatch:   # ручной запуск: кнопка «Run workflow»
@@ -15,6 +16,10 @@ on:
         default: false
       only_afisha:
         description: "Только афиша, без новостного выпуска"
+        type: boolean
+        default: false
+      greeting:
+        description: "Проверка поздравления: опубликовать, если сегодня праздник из списка (в любое время дня)"
         type: boolean
         default: false
 
@@ -44,7 +49,8 @@ jobs:
           OPENAI_PROJECT: ${{ secrets.OPENAI_PROJECT }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           MYMEMORY_EMAIL: ${{ secrets.MYMEMORY_EMAIL }}
-          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && !inputs.greeting && '1' || '' }}
+          FORCE_GREETING: ${{ inputs.greeting && '1' || '' }}
         run: python digest.py
 
       - name: Афиша недели (по пятницам вечером)
