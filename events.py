@@ -139,14 +139,20 @@ def find_events(monday, sunday):
     rules = (f"Нужны только КРУПНЫЕ форумы, конференции, выставки, саммиты, которые проходят {period}, ОЧНО или в гибридном формате "
              f"(чисто онлайн-вебинары не нужны), в странах: {COUNTRIES_TEXT}. Темы: искусственный интеллект, образование и EdTech, "
              "информационные технологии и цифровизация, робототехника. Крупное — это федеральный или национальный уровень, "
-             "международный статус, известный организатор (министерство, крупная компания, отраслевая ассоциация, ведущий вуз), "
-             "сотни и тысячи участников. Митапы, вебинары, курсы, локальные встречи — не брать.\n"
+             "международный статус, известный организатор (министерство, региональное правительство, крупная компания, отраслевая "
+             "ассоциация, ведущий вуз), сотни и тысячи участников. Митапы, вебинары, курсы, локальные встречи — не брать. "
+             "Для России важно охватить все регионы, а не только Москву и Петербург: крупное региональное событие не менее ценно, "
+             "чем столичное. Город указывай всегда.\n"
              "Для каждого события нужна ссылка на официальную страницу события (не на новость о нём). Даты — точные. "
              "Если не уверен в датах или в существовании события — не включай. Лучше меньше, но точно.\n"
              f"Верни ТОЛЬКО JSON вида {schema} без пояснений.")
     events = []
     if web_search_available():
-        for scope in ("в России", "в странах БРИКС+ за пределами России (в первую очередь Китай, Индия, ОАЭ, Казахстан, Бразилия, ЮАР, Турция, Индонезия)"):
+        for scope in ("в России",
+                      "в регионах России за пределами Москвы и Санкт-Петербурга: Казань и Иннополис, Нижний Новгород, Екатеринбург, "
+                      "Новосибирск, Томск, Пермь, Самара, Уфа, Краснодар, Ростов-на-Дону, Красноярск, Владивосток, Калининград и другие города, "
+                      "включая форумы федеральных округов и события при поддержке региональных правительств",
+                      "в странах БРИКС+ за пределами России (в первую очередь Китай, Индия, ОАЭ, Казахстан, Бразилия, ЮАР, Турция, Индонезия)"):
             prompt = f"Найди через поиск в интернете крупные очные форумы и конференции по ИИ, образованию, ИТ и робототехнике {scope}, которые пройдут {period}.\n{rules}"
             try:
                 data = parse_json(llm_with_search(prompt))
@@ -240,20 +246,20 @@ def main_event_blurb(ev, page_text):
 
 
 def build_post(events, monday, sunday):
-    ru = [e for e in events if e.get("country", "").strip().lower() in ("россия", "russia", "рф")]
-    world = [e for e in events if e not in ru]
-    for lst in (ru, world):
-        lst.sort(key=lambda e: e["start"])
     main = events[0]
+    is_ru = lambda e: e.get("country", "").strip().lower() in ("россия", "russia", "рф")
+    rest = [e for e in events if e is not main]          # главное событие в общем перечне не повторяется
+    ru = sorted([e for e in rest if is_ru(e)], key=lambda e: e["start"])
+    world = sorted([e for e in rest if not is_ru(e)], key=lambda e: e["start"])
     text = f"📅 <b>Афиша недели: ИИ, образование, ИТ и роботы</b>\n{week_label(monday, sunday)}\n\n"
-    text += f"⭐ <b>Главное событие</b>\n<b>{html.escape(main['name'])}</b> — {date_label(main['start'], main.get('end'))}, {html.escape(main.get('city', ''))}"
-    text += f" ({html.escape(main['country'])})" if main not in ru else ""
+    text += f"⭐ <b>Главное событие будущей недели</b>\n<b>{html.escape(main['name'])}</b> — {date_label(main['start'], main.get('end'))}, {html.escape(main.get('city', ''))}"
+    text += f" ({html.escape(main['country'])})" if not is_ru(main) else ""
     text += f"\n{html.escape(main['_blurb'])}\n<a href=\"{html.escape(main['url'])}\">Страница события</a>\n"
 
     def line(e):
         emoji = TOPICS.get(e.get("topic", "it"), "💻")
         where = html.escape(e.get("city", ""))
-        if e not in ru:
+        if not is_ru(e):
             where += f" ({html.escape(e.get('country', ''))})"
         fmt = " (гибрид)" if "гибрид" in (e.get("format") or "").lower() else ""
         return (f"{emoji} <b>{date_label(e['start'], e.get('end'))}</b> — <a href=\"{html.escape(e['url'])}\">{html.escape(e['name'])}</a>, "
