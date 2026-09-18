@@ -3,9 +3,20 @@ name: Дайджест в Телеграм
 on:
   schedule:
     # Время в UTC. 06:00 и 15:00 UTC = 09:00 и 18:00 по Москве.
-    - cron: "0 6 * * *"
-    - cron: "0 15 * * *"
-  workflow_dispatch:   # кнопка «Run workflow» для запуска вручную
+    # Публикации только по будням; праздники робот проверяет сам по производственному календарю.
+    - cron: "0 6 * * 1-5"      # утренний новостной выпуск, понедельник–пятница
+    - cron: "0 15 * * 1-4"     # вечерний новостной выпуск, понедельник–четверг
+    - cron: "0 15 * * 5"       # пятница вечером: только афиша недели
+  workflow_dispatch:   # ручной запуск: кнопка «Run workflow»
+    inputs:
+      afisha:
+        description: "Опубликовать афишу недели прямо сейчас (обычно она выходит сама по пятницам вечером)"
+        type: boolean
+        default: false
+      only_afisha:
+        description: "Только афиша, без новостного выпуска"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,6 +34,7 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: Собрать и отправить дайджест
+        if: ${{ !inputs.only_afisha && github.event.schedule != '0 15 * * 5' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -32,14 +44,25 @@ jobs:
           OPENAI_PROJECT: ${{ secrets.OPENAI_PROJECT }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           MYMEMORY_EMAIL: ${{ secrets.MYMEMORY_EMAIL }}
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: python digest.py
+
+      - name: Афиша недели (по пятницам вечером)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_PROJECT: ${{ secrets.OPENAI_PROJECT }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          FORCE_EVENTS: ${{ (inputs.afisha || inputs.only_afisha) && '1' || '' }}
+        run: python events.py
 
       - name: Запомнить опубликованные новости
         run: |
           git config user.name "digest-bot"
           git config user.email "digest-bot@users.noreply.github.com"
           git add posted.json
-          git diff --cached --quiet || git commit -m "Обновлён список опубликованных новостей"
-          git push
           git diff --cached --quiet || git commit -m "Обновлён список опубликованных новостей"
           git push
