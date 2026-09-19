@@ -49,6 +49,8 @@ jobs:
           OPENAI_PROJECT: ${{ secrets.OPENAI_PROJECT }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           MYMEMORY_EMAIL: ${{ secrets.MYMEMORY_EMAIL }}
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
           FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && !inputs.greeting && '1' || '' }}
           FORCE_GREETING: ${{ inputs.greeting && '1' || '' }}
         run: python digest.py
@@ -62,6 +64,8 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_PROJECT: ${{ secrets.OPENAI_PROJECT }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
           FORCE_EVENTS: ${{ (inputs.afisha || inputs.only_afisha) && '1' || '' }}
         run: python events.py
 
