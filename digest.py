@@ -777,6 +777,11 @@ def send(posts):
             log("Телеграм ответил ошибкой:", r.text)
             r.raise_for_status()
         time.sleep(3)  # чтобы не упереться в лимит Телеграма на частоту постов
+    try:
+        import vk
+        vk.publish(posts)   # зеркало во ВКонтакте, если заданы VK_TOKEN и VK_GROUP_ID
+    except Exception as ex:
+        log(f"ВК: модуль не отработал ({ex})")
     return True
 
 
