@@ -716,6 +716,7 @@ def build_posts(chosen):
             if i["lang"] == "en":
                 title, body = translate(title), translate(body)
         i["done"] = True
+        i["_title"], i["_body"] = title, body
         s = sec[i["section"]]
         link = html.escape(i["link"])
         tail = f"\n\n<i>Источник: <a href=\"{link}\">{html.escape(i['source'])}</a> ({html.escape(i['country'])})</i>"
@@ -729,6 +730,7 @@ def build_posts(chosen):
             img_url = og if download_image(og) else ""
         if not img_url:
             log(f"  без картинки: {i['title'][:60]}")
+        i["_img"] = img_url
         posts.append({"text": text, "image": img_url, "link": i["link"]})
     log(f"Заметок написано моделью: {written_n} из {len(chosen)}")
     chosen[:] = [i for i in chosen if i.get("done")]
@@ -801,6 +803,48 @@ def greeting_today(day=None):
     return None
 
 
+
+# ---------- лента для сайта ----------
+# Всё, что робот публикует в Телеграм и ВК, он же сохраняет в news.json.
+# Сайт techno-puls.ru читает этот файл и показывает те же материалы: единые правила отбора для всех площадок.
+
+SITE_FEED = "news.json"
+SITE_FEED_MAX = 240          # сколько последних материалов хранить (примерно месяц выпусков)
+
+
+def site_feed_add(entries):
+    try:
+        with open(SITE_FEED, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {"items": []}
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    data["meta"] = {
+        "title": CHANNEL_TITLE,
+        "telegram": f"https://t.me/{chat[1:]}" if chat.startswith("@") else "",
+        "vk": f"https://vk.com/club{os.environ['VK_GROUP_ID'].strip()}" if os.environ.get("VK_GROUP_ID", "").strip() else "",
+        "sections": [{"id": s["id"], "name": s["name"], "emoji": s["emoji"]} for s in SECTIONS],
+    }
+    data["updated"] = datetime.now(MSK).isoformat(timespec="minutes")
+    known = {e.get("link") for e in data["items"] if e.get("link")}
+    fresh = [e for e in entries if not (e.get("link") and e["link"] in known)]
+    data["items"] = (fresh + data["items"])[:SITE_FEED_MAX]
+    with open(SITE_FEED, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    log(f"Лента сайта обновлена: +{len(fresh)}, всего {len(data['items'])}")
+
+
+def site_feed_news(chosen):
+    now = datetime.now(MSK)
+    issue = f"{now:%Y-%m-%d} {'утро' if now.hour < 14 else 'вечер'}"
+    return [{
+        "type": "news", "date": now.isoformat(timespec="minutes"), "issue": issue,
+        "title": i.get("_title") or i["title"], "body": i.get("_body") or i["summary"],
+        "image": i.get("_img") or "", "section": i["section"], "country": i.get("country", ""),
+        "region": i.get("region", ""), "group": i.get("group", ""), "source": i["source"], "link": i["link"],
+    } for i in chosen]
+
+
 def post_greeting(g, state):
     key = f"{datetime.now(MSK).year}-{g['name']}"
     if key in state.get("greeted", []):
@@ -816,6 +860,8 @@ def post_greeting(g, state):
         state.setdefault("greeted", []).append(key)
         state["greeted"] = state["greeted"][-50:]
         save_state(state)
+        site_feed_add([{"type": "greeting", "date": datetime.now(MSK).isoformat(timespec="minutes"), "title": g["name"],
+                        "body": g["text"], "image": g.get("img", ""), "link": f"greeting:{key}"}])
         log(f"Поздравление опубликовано: {g['name']}")
 
 
@@ -854,6 +900,7 @@ def main():
     if send(posts):
         state["posted"].extend(i["link"] for i in chosen)
         save_state(state)
+        site_feed_add(site_feed_news(chosen))
         log(f"Опубликовано новостей: {len(chosen)}")
 
 
