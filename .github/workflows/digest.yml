@@ -73,6 +73,6 @@ jobs:
         run: |
           git config user.name "digest-bot"
           git config user.email "digest-bot@users.noreply.github.com"
-          git add posted.json
-          git diff --cached --quiet || git commit -m "Обновлён список опубликованных новостей"
+          git add posted.json news.json
+          git diff --cached --quiet || git commit -m "Обновлены опубликованные новости и лента сайта"
           git push
