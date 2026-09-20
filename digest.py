@@ -160,8 +160,15 @@ BRICS = {"Бразилия", "Индия", "Китай", "Гонконг", "ЮА
          "Нигерия", "Турция", "Казахстан", "Узбекистан", "Белоруссия", "Малайзия", "Таиланд", "Вьетнам", "Куба", "Боливия", "Уганда"}
 CIS = {"Казахстан", "Узбекистан", "Белоруссия", "Киргизия", "Таджикистан", "Армения", "Азербайджан", "Туркмения", "Молдавия"}
 GROUP_BONUS = {"БРИКС+": 10, "СНГ": 5, "другие": 0}
-CANDIDATES_PER_REGION = {"ru": 10, "us": 8, "uk": 8, "world": 18}   # сколько кандидатов из каждой группы показать модели
+CANDIDATES_PER_REGION = {"ru": 16, "us": 10, "uk": 10, "world": 34}  # сколько кандидатов из каждой группы показать модели
 MAX_ITEMS = sum(QUOTAS.values())
+
+# Второй уровень — только для сайта. Каналы получают MAX_ITEMS лучших, сайт — их же плюс ещё SITE_QUOTAS материалов,
+# отобранных по тем же правилам, но с короткими заметками. Чтобы отключить, поставьте все значения в 0.
+SITE_QUOTAS = {"ru": 4, "us": 2, "uk": 2, "world": 9}        # дополнительно к выпуску; итого на сайте до 25 за выпуск
+SITE_BODY_MIN, SITE_BODY_MAX = 500, 900                     # длина короткой заметки для сайта, знаков
+SITE_MAX_PER_SECTION = 8
+SITE_MAX_PER_SOURCE = 3
 
 
 def region(feed):
@@ -510,16 +517,17 @@ def select(items, limit=None, per_section=None, per_source=None, quotas=None):
 def candidates(items):
     """Широкий список кандидатов: по CANDIDATES_PER_REGION лучших из каждой группы стран."""
     q = CANDIDATES_PER_REGION
-    return select(items, limit=sum(q.values()), per_section=sum(q.values()), per_source=3, quotas=q)
+    return select(items, limit=sum(q.values()), per_section=sum(q.values()), per_source=5, quotas=q)
 
 
-def enforce_quotas(picked, pool):
+def enforce_quotas(picked, pool, quotas=None, per_source=None, per_section=None):
     """Приводит выбор модели к квотам: лишнее убирает, недостающее добирает из кандидатов по очкам."""
+    quotas, per_source, per_section = quotas or QUOTAS, per_source or MAX_PER_SOURCE, per_section or MAX_PER_SECTION
     out, per_reg, per_src, per_sec = [], {}, {}, {}
 
     def fits(i):
-        return (per_reg.get(i["region"], 0) < QUOTAS[i["region"]] and per_src.get(i["source"], 0) < MAX_PER_SOURCE
-                and per_sec.get(i["section"], 0) < MAX_PER_SECTION)
+        return (per_reg.get(i["region"], 0) < quotas.get(i["region"], 0) and per_src.get(i["source"], 0) < per_source
+                and per_sec.get(i["section"], 0) < per_section)
 
     def add(i):
         out.append(i)
@@ -581,8 +589,10 @@ def parse_json(text):
     return json.loads(m.group(0) if m else text)
 
 
-def llm_select(items):
-    """Модель выбирает новости в выпуск из списка кандидатов и назначает рубрику."""
+def llm_select(items, quotas=None, per_source=None, per_section=None, purpose="выпуск"):
+    """Модель выбирает новости из списка кандидатов и назначает рубрику. quotas — квоты по странам изданий."""
+    quotas, per_source, per_section = quotas or QUOTAS, per_source or MAX_PER_SOURCE, per_section or MAX_PER_SECTION
+    n_items = sum(quotas.values())
     cands = items
     sec_list = "\n".join(f'  "{s["id"]}" — {s["name"]}' for s in SECTIONS)
     reg_name = REGION_NAME
@@ -591,8 +601,8 @@ def llm_select(items):
     listing = "\n\n".join(f"[{n}] ({reg_name[i['region']]}: {tag(i)}) {i['title']}\n{(i.get('text') or i['summary'])[:500]}"
                           for n, i in enumerate(cands, 1))
     system = ("Ты выпускающий редактор. " + CHANNEL_ABOUT + " Отвечай только JSON без пояснений.")
-    quota_text = ", ".join(f"{reg_name[r]} — {n}" for r, n in QUOTAS.items())
-    user = (f"Ниже {len(cands)} новостей-кандидатов, у каждой указана страна издания. Собери выпуск ровно из {MAX_ITEMS} новостей.\n"
+    quota_text = ", ".join(f"{reg_name[r]} — {n}" for r, n in quotas.items() if n)
+    user = (f"Ниже {len(cands)} новостей-кандидатов, у каждой указана страна издания. Собери {purpose}: до {n_items} новостей.\n"
             f"Жёсткие квоты по стране ИЗДАНИЯ (не по стране события): {quota_text}. Квоты обязательны.\n"
             "Внутри группы «остальной мир» приоритет стран: сначала БРИКС+ (Китай, Индия, Бразилия, ЮАР, Египет, ОАЭ, Иран, Индонезия, "
             "Саудовская Аравия, Турция, Нигерия и др.), затем СНГ (Казахстан, Узбекистан, Белоруссия, Киргизия, Армения, Азербайджан и др.), "
@@ -607,11 +617,11 @@ def llm_select(items):
             "Конкретное внедрение ценнее общих рассуждений, исследований мнений и прогнозов.\n"
             "Не брать: рекламу курсов и продуктов, релизы гаджетов, военные новости, слухи, мелкие пресс-релизы без общественного значения, "
             "инструкции для программистов.\n"
-            f"Не больше {MAX_PER_SECTION} новостей в одной рубрике, не больше {MAX_PER_SOURCE} от одного источника, без дублей одной темы.\n"
+            f"Не больше {per_section} новостей в одной рубрике, не больше {per_source} от одного источника, без дублей одной темы.\n"
             f"Каждой выбранной новости назначь рубрику из списка:\n{sec_list}\n\n"
             'Формат ответа: {"picks": [{"n": номер, "section": "id рубрики", "why": "3-6 слов"}]}\n\n' + listing)
     try:
-        data = parse_json(llm(system, user, 800))
+        data = parse_json(llm(system, user, 400 + 60 * n_items))
         out = []
         for p in data.get("picks", []):
             n = int(p["n"]) - 1
@@ -621,7 +631,7 @@ def llm_select(items):
                     i["section"] = p["section"]
                 out.append(i)
                 log(f"  выбрано ({i['region']}, {i['country']}, {i['source']}): {i['title'][:60]} — {p.get('why', '')}")
-        return enforce_quotas(out, cands)
+        return enforce_quotas(out, cands, quotas, per_source, per_section)
     except Exception as ex:
         log(f"  отбор моделью не удался ({ex}), отбираю по ключевым словам")
         return []
@@ -639,8 +649,10 @@ def article_text(link):
         return ""
 
 
-def llm_write(item):
-    """Модель пишет самостоятельную статью по полному тексту материала. Возвращает (заголовок, текст) или None."""
+def llm_write(item, short=False):
+    """Модель пишет самостоятельную статью по полному тексту материала. Возвращает (заголовок, текст) или None.
+    short=True — короткая заметка для сайта (второй уровень выпуска)."""
+    lo, hi = (SITE_BODY_MIN, SITE_BODY_MAX) if short else (BODY_MIN, BODY_MAX)
     body_src = item.get("text") or ""
     if len(body_src) < MIN_ARTICLE:
         log("  текста статьи нет, пропускаю")
@@ -653,7 +665,7 @@ def llm_write(item):
             "не открывая первоисточник.\n"
             "Требования:\n"
             "- заголовок: до 80 знаков, информативный, по-русски, без кликбейта и без точки в конце;\n"
-            f"- текст: {BODY_MIN}–{BODY_MAX} знаков, 4–6 абзацев, разделённых пустой строкой, без подзаголовков и списков.\n"
+            f"- текст: {lo}–{hi} знаков, {'2–3 абзаца' if short else '4–6 абзацев'}, разделённых пустой строкой, без подзаголовков и списков.\n"
             "  1) Лид: суть события в двух-трёх предложениях — кто, что, где, когда.\n"
             "  2) Подробности: конкретика из материала — цифры, названия, механика решения, сроки, участники, цитаты (в пересказе).\n"
             "  3) Контекст и значение: почему это важно, что это меняет для образования, госуправления или бизнеса, "
@@ -666,9 +678,9 @@ def llm_write(item):
             'Формат ответа: {"title": "...", "body": "..."}\n\n'
             f"Источник: {item['source']}\nЗаголовок оригинала: {item['title']}\n\nМатериал:\n{body_src}")
     try:
-        data = parse_json(llm(system, user, 2500))
+        data = parse_json(llm(system, user, 1400 if short else 2500))
         title, body = data["title"].strip().rstrip("."), data["body"].strip()
-        if len(title) < 10 or len(body) < 500:
+        if len(title) < 10 or len(body) < (250 if short else 500):
             raise ValueError("слишком короткий ответ")
         return title, body
     except Exception as ex:
@@ -744,6 +756,32 @@ def build_posts(chosen):
     return posts
 
 
+
+def build_site_tier(pool, chosen):
+    """Второй уровень выпуска для сайта: ещё SITE_QUOTAS материалов из тех же кандидатов, короткие заметки."""
+    if not sum(SITE_QUOTAS.values()) or not llm_available():
+        return []
+    rest = [i for i in pool if i not in chosen]
+    extra = llm_select(rest, SITE_QUOTAS, SITE_MAX_PER_SOURCE, SITE_MAX_PER_SECTION, purpose="дополнительную подборку для сайта")
+    done = []
+    for i in extra:
+        w = llm_write(i, short=True)
+        if not w:
+            continue
+        i["_title"], i["_body"] = w
+        img = i["img"] if download_image(i["img"]) else ""
+        if not img:
+            og = page_image(i["link"])
+            img = og if download_image(og) else ""
+        i["_img"] = img
+        i["tier"] = "site"
+        done.append(i)
+    order = {s["id"]: n for n, s in enumerate(SECTIONS)}
+    done.sort(key=lambda i: order[i["section"]])
+    log(f"Второй уровень для сайта: выбрано {len(extra)}, написано {len(done)}")
+    return done
+
+
 def plural(n):
     if n % 10 == 1 and n % 100 != 11:
         return "новость"
@@ -809,7 +847,7 @@ def greeting_today(day=None):
 # Сайт techno-puls.ru читает этот файл и показывает те же материалы: единые правила отбора для всех площадок.
 
 SITE_FEED = "news.json"
-SITE_FEED_MAX = 240          # сколько последних материалов хранить (примерно месяц выпусков)
+SITE_FEED_MAX = 700          # сколько последних материалов хранить (при 50 в день — около месяца)
 
 
 def site_feed_add(entries):
@@ -842,6 +880,7 @@ def site_feed_news(chosen):
         "title": i.get("_title") or i["title"], "body": i.get("_body") or i["summary"],
         "image": i.get("_img") or "", "section": i["section"], "country": i.get("country", ""),
         "region": i.get("region", ""), "group": i.get("group", ""), "source": i["source"], "link": i["link"],
+        "tier": i.get("tier", "top"),
     } for i in chosen]
 
 
@@ -887,7 +926,9 @@ def main():
         wide = candidates(items)
         wide = read_articles(wide)
         chosen = llm_select(wide)
+        pool = wide
     else:
+        pool = []
         log("Ключ модели не задан — работаю в упрощённом режиме (машинный перевод, обрывки RSS)")
     if not chosen:
         chosen = select(items)
@@ -898,10 +939,11 @@ def main():
     chosen.sort(key=lambda i: order[i["section"]])
     posts = build_posts(chosen)
     if send(posts):
-        state["posted"].extend(i["link"] for i in chosen)
+        extra = build_site_tier(pool, chosen)
+        state["posted"].extend(i["link"] for i in chosen + extra)
         save_state(state)
-        site_feed_add(site_feed_news(chosen))
-        log(f"Опубликовано новостей: {len(chosen)}")
+        site_feed_add(site_feed_news(chosen + extra))
+        log(f"Опубликовано новостей: {len(chosen)} в каналах, {len(chosen) + len(extra)} на сайте")
 
 
 if __name__ == "__main__":
