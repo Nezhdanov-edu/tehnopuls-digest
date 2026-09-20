@@ -306,8 +306,11 @@ def main():
     text = build_post(verified, monday, sunday)
     img = page_image(verified[0]["url"])
     img = img if img and download_image(img) else ""
-    send([{"text": text, "image": img or None}])
-    log("Афиша опубликована." if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() else "")
+    if send([{"text": text, "image": img or None}]):
+        digest.site_feed_add([{"type": "afisha", "date": datetime.now(MSK).isoformat(timespec="minutes"),
+                               "title": f"Афиша недели: {week_label(monday, sunday)}", "html": text, "image": img or "",
+                               "link": f"afisha:{monday.isoformat()}"}])
+        log("Афиша опубликована.")
 
 
 if __name__ == "__main__":
